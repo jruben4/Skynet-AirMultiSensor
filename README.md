@@ -5,6 +5,9 @@ A ESPHome air-quality and climate monitor built on an ESP32-WROOM board, combini
 
 ---
 
+## Case 3D Model
+https://makerworld.com/en/models/3134930-skynet-air-multisensor
+
 ## Features
 
 - **16 live measurements** across temperature, humidity, CO2, particulates, VOC/NOx, and six trace gases
