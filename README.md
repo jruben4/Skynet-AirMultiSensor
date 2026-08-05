@@ -22,23 +22,15 @@ A ESPHome air-quality and climate monitor built on an ESP32-WROOM board, combini
 
 ## Hardware
 
-| Component | Part | Interface | Address |
+| Component | Part | Interface | Link |
 |---|---|---|---|
-| MCU | Freenove ESP32-WROOM (ESP32 rev3.1, 4MB flash, no PSRAM) | — | — |
-| Temp / humidity | DHT22 (AM2302) | 1-Wire | — |
-| CO2 | Sensirion SCD41 | I²C bus A | `0x62` |
-| Particulate / VOC / NOx | Sensirion SEN55 | I²C bus B | `0x69` |
-| Trace gases | MICS-4514 | I²C bus A | `0x75` |
-| Display | ST7789V 240×320 IPS, SPI | SPI (VSPI) | — |
-| Status LED | WS2812 (onboard, marked "16") | RMT | — |
-
-Waveshare 2" ST7789VW Display - https://www.amazon.com/dp/B082GFTZQD
-Gravity MiCS-4514 - https://www.amazon.com/dp/B09G9PZ4XZ
-SCD41 - https://www.amazon.com/dp/B0GWQMQVN8
-Sen55 Grove - https://www.seeedstudio.com/Grove-All-in-one-Environmental-Sensor-SEN55-p-5373.html
-DHT22 - https://www.amazon.com/dp/B0CPHQC9SF
-ESP32 - https://www.amazon.com/dp/B0C9THDPXP
-Grove breakout cable (optional) - https://www.amazon.com/dp/B074MDM36N
+| MCU | Freenove ESP32-WROOM (ESP32 rev3.1, 4MB flash, no PSRAM) | — | https://www.amazon.com/dp/B0C9THDPXP |
+| Temp / humidity | DHT22 (AM2302) | 1-Wire | https://www.amazon.com/dp/B0CPHQC9SF |
+| CO2 | Sensirion SCD41 | I²C bus A | https://www.amazon.com/dp/B0GWQMQVN8 |
+| Particulate / VOC / NOx | Sensirion SEN55 | I²C bus B | https://www.seeedstudio.com/Grove-All-in-one-Environmental-Sensor-SEN55-p-5373.html |
+| Trace gases | MICS-4514 | I²C bus A | https://www.amazon.com/dp/B09G9PZ4XZ |
+| Display | ST7789V 240×320 IPS, SPI | SPI (VSPI) | https://www.amazon.com/dp/B082GFTZQD |
+| Grove breakout cable (optional) | — | — | https://www.amazon.com/dp/B074MDM36N |
 
 ---
 
