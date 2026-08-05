@@ -32,6 +32,13 @@ A ESPHome air-quality and climate monitor built on an ESP32-WROOM board, combini
 | Display | ST7789V 240×320 IPS, SPI | SPI (VSPI) | — |
 | Status LED | WS2812 (onboard, marked "16") | RMT | — |
 
+Waveshare 2" ST7789VW Display - https://www.amazon.com/dp/B082GFTZQD
+Gravity MiCS-4514 - https://www.amazon.com/dp/B09G9PZ4XZ
+SCD41 - https://www.amazon.com/dp/B0GWQMQVN8
+Sen55 Grove - https://www.seeedstudio.com/Grove-All-in-one-Environmental-Sensor-SEN55-p-5373.html
+DHT22 - https://www.amazon.com/dp/B0CPHQC9SF
+ESP32 - https://www.amazon.com/dp/B0C9THDPXP
+Grove breakout cable (optional) - https://www.amazon.com/dp/B074MDM36N
 
 ---
 
@@ -170,13 +177,43 @@ Thresholds are one-sided — they only flag values that are too *high*. A cold r
 
 ---
 
+## Wiring
+Grove cable - white = SDA, Yellow = SCL
+Gravity cable - green = SDA, Blue = SCL
+
+1. Splice together I2C bus for the SCD41 and Gravity 4515 chips (power, ground, SDA, SCL).  Can use the Gravity cable that comes with the chip and cut off the non-gravity side.
+2. Can either get a grove breakout cable, or cut the end off the grove cable and splice into breadboard pin cable.
+3. Make sure to solder the pins to the SCD41 board to the backside (opposite the sensor)
+
+Sen55/Gravity SCL - GPIO22, SDA - GPIO21
+Grove/SCD41 SCL - RX (GPIO17), SDA - GPIO26
+DHT22: 3.3V, GND, signal to GPIO25
+
+Display hookup (these are the colors of the cable that came with my display, YMMV):
+DC - blue - GPIO4
+CS - yellow - GPIO5
+RST - brown - GPIO27
+CLK - orange - GPIO18
+DIN (MOSI) - green - GPIO23
+VCC - purple - 3.3V
+GND - white - GND
+BL - grey - GPIO32
+
+
+## Assembly
+1. Attach Display with M2x4 screws.  Plug goes on top.  Use a allen wrench key through the back holes to get the bottom two screws in.
+2. Place SCD41, secure with two-sided tape on the front-facing side below the sensor box.
+3. Attach DHT22 above it (with jumpers attached already) with M3x4 screws
+4. Attach MICS with M2x4 screws
+5. Slide the ESP32 in the center section, under the display, usb facing the hole and pins pointing up
+6. Attach USB into ESP32 through back hole.
+
 ## Installation
 
 1. Install [ESPHome](https://esphome.io/) (2026.7.3 or later — the config uses `mipi_spi`).
-2. Place `gothic.ttf` in a `fonts/` directory beside the YAML.
-3. Add `wifi_ssid` and `wifi_password` to your `secrets.yaml`.
-4. Replace the API encryption key, OTA password, and `use_address` with your own.
-5. Flash over USB the first time. **USB flashing is required at least once** — `sram1_as_iram: true` needs a bootloader from ESP-IDF 5.1 or later, and bootloaders do not update over OTA.
+2. Add `wifi_ssid` and `wifi_password` to your `secrets.yaml`.
+3. Replace the API encryption key, OTA password, and `use_address` with your own.
+4. Flash over USB the first time. **USB flashing is required at least once** — `sram1_as_iram: true` needs a bootloader from ESP-IDF 5.1 or later, and bootloaders do not update over OTA.
 
 ### Notes on first boot
 
