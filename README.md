@@ -17,10 +17,10 @@ https://makerworld.com/en/models/3134930-skynet-air-multisensor
   - **Rotating** — four pages of four values in large type, auto-advancing, with page indicator dots
   - **Highlight** — static page showing temperature, VOC, CO2, and PM2.5 only
 - **Threshold color coding** — green below moderate, amber above moderate, red above high; thresholds drawn from EPA AQI breakpoints, WHO guidance, and OSHA/NIOSH exposure limits
-- **Runtime configuration** — no reflashing needed to change display mode, rotation speed, sensor polling interval, °F/°C, or backlight brightness
+- **Runtime configuration via ESPHOME** — no reflashing needed to change display mode, rotation speed, sensor polling interval, °F/°C, or backlight brightness
 - **Bluetooth proxy** — active proxy with 3 connections plus continuous BLE tracking, extending Home Assistant's Bluetooth range
 - **WiFi fault indicator** — onboard RGB LED blinks red every 5 seconds when disconnected
-
+- **CO2 calibration to atmostpheric pressure**
 ---
 
 ## Hardware
@@ -173,18 +173,22 @@ Thresholds are one-sided — they only flag values that are too *high*. A cold r
 ---
 
 ## Wiring
+
+You will be making two different I2C buses.  The SCD41 and 4515 chips are on one, and the SEN55 is by itself on the other.
+
+There should be cables that came with the SCD41 grove chip, as well as the SEN55 Gravity sensor.  Below are the colors that I had:
+
 Grove cable - white = SDA, Yellow = SCL
 Gravity cable - green = SDA, Blue = SCL
 
-1. Splice together I2C bus for the SCD41 and Gravity 4515 chips (power, ground, SDA, SCL).  Can use the Gravity cable that comes with the chip and cut off the non-gravity side.
-2. Can either get a grove breakout cable, or cut the end off the grove cable and splice into breadboard pin cable.
-3. Make sure to solder the pins to the SCD41 board to the backside (opposite the sensor)
+1. Bus 1: Splice together and I2C "bus" for the SCD41 and Gravity 4515 chips (connect power, ground, SDA, SCL of the two sensors, and also connect them to jumpers that end in breadboard connectors to plug into the ESP32 pins).  SCL for this bus goes to RX (GPIO17), and SDA - GPIO26
+2. Bus 2: Make a second I2C "bus" for the gravity SEN55 sensor - Can use the Gravity cable that comes with the chip and cut off the non-gravity side and splice onto breadboard connectors, or purchase the premade cable (link above). SCL for this bus goes to GPIO22, SDA - GPIO21
+3. Power on both buses goes to 3.3V pins, ground to ground.
 
-Sen55/Gravity SCL - GPIO22, SDA - GPIO21
-Grove/SCD41 SCL - RX (GPIO17), SDA - GPIO26
-DHT22: 3.3V, GND, signal to GPIO25
+4. Make sure to solder the pins to the SCD41 board to the backside (opposite the sensor)
+5. DHT22: 3.3V, GND, signal to GPIO25
 
-Display hookup (these are the colors of the cable that came with my display, YMMV):
+6. Display hookup (these are the colors of the cable that came with my display, YMMV):
 DC - blue - GPIO4
 CS - yellow - GPIO5
 RST - brown - GPIO27
@@ -196,14 +200,19 @@ BL - grey - GPIO32
 
 
 ## Assembly
+
+<img src="Images/IMG_0808.jpeg" alt="alt text" width="300">
+
 1. Attach Display with M2x4 screws.  Plug goes on top.  Use a allen wrench key through the back holes to get the bottom two screws in.
 2. Place SCD41, secure with two-sided tape on the front-facing side below the sensor box.
 3. Attach DHT22 above it (with jumpers attached already) with M3x4 screws
 4. Attach MICS with M2x4 screws
 5. Slide the ESP32 in the center section, under the display, usb facing the hole and pins pointing up
-6. Attach USB into ESP32 through back hole.
+6. Attach USB-C power cable into ESP32 through back hole.
 
-## Installation
+<img src="Images/IMG_0811.jpeg" alt="alt text" width="300">
+
+## Software/Firmeware Installation
 
 1. Install [ESPHome](https://esphome.io/) (2026.7.3 or later — the config uses `mipi_spi`).
 2. Add `wifi_ssid` and `wifi_password` to your `secrets.yaml`.
@@ -218,8 +227,38 @@ BL - grey - GPIO32
 
 ---
 
-## Configuration notes
+## Home Assistant Integration
 
+
+<img src="Images/controls.png" alt="alt text" width="300">
+
+1) Diplay backlight - turning this off will blank display
+2) Display mode:
+    - All 16 - all 16 sensors on a single screen, but small
+    - Rotating - 4 sensors on each screen (bigger), rotating through 4 pages (speed adjustable)
+    - Highlights - 4 sensors on single screen (bigger) - temp, VOC, PM2.5, and CO2.
+
+<img src="Images/IMG_0815.jpeg" alt="alt text" width="300">
+<img src="Images/IMG_0820.jpeg" alt="alt text" width="200">
+
+
+3) Status LED - there is an on-chip light that is controlable, but probably not visable from outside the case.
+
+---
+
+<img src="Images/configuration.png" alt="alt text" width="300">
+
+1) Display Fahrenheit - If on, the display will show temp in F.  If not, C.  (both are transmitted to home assistant)
+2) Display Rotation Speed - if on "rotating" diplay mode, this will adjust how fast the pages will cycle
+3) Restart - will reboot ESP
+4) Sensor update - adjust the update speed of all the sensors.  10s is the minimum.
+
+---
+
+<img src="Images/sensors.png" alt="alt text" width="300">
+
+1) Sensor data exposed to home assistant.
+2) Wifi data also available "Diagnostic" panel - not pictured.
 ---
 
 ## License
