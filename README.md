@@ -1,5 +1,5 @@
 # Skynet-AirMultiSensor
-# Skynet Multisensor
+
 <img src="Images/IMG_0815.jpeg" alt="alt text" width="500">
 
 A ESPHome air-quality and climate monitor built on an ESP32-WROOM board, combining four sensors across two I²C buses: a DHT22 for temperature and humidity (with absolute humidity derived in firmware), a Sensirion SCD41 for true NDIR CO2, a Sensirion SEN55 for PM1.0/2.5/4.0/10 particulates plus VOC and NOx indices, and a MICS-4514 for nitrogen dioxide, carbon monoxide, hydrogen, ethanol, methane, and ammonia — sixteen live values in total, all exposed to Home Assistant over the encrypted ESPHome API. A 240×320 ST7789V SPI display shows the readings in one of three user-selectable modes, with every value color-coded green, amber, or red against configurable thresholds. Display mode, page rotation speed, sensor polling interval, temperature units, and backlight brightness are all adjustable at runtime from Home Assistant without reflashing. The device doubles as an active Bluetooth proxy and BLE tracker.
