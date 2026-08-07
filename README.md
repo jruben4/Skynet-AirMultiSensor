@@ -9,7 +9,7 @@ A ESPHome air-quality and climate monitor built on an ESP32-WROOM board, combini
 
 - [Features](#features)
 - [3D Model](#case-3d-model)
-- [Hardware Bill of Materials (BOM) & Purchase Links](#hardware)
+- [Hardware Bill of Materials (BOM) & Purchase Links](#-hardware-bill-of-materials-bom--purchase-links)
 - [Saftey Notice](#safety-notice)
 - [Wiring](#wiring)
 - [Assembly](#assembly)
