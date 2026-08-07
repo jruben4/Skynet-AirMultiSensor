@@ -25,17 +25,23 @@ A ESPHome air-quality and climate monitor built on an ESP32-WROOM board, combini
 
 ## Features
 
+- **High Accuracy Sensors** - Top-of-class specific sensor choices based on published accuracy data.  No more eCO2 or index gas levels.
 - **16 live measurements** across temperature, humidity, CO2, particulates, VOC/NOx, and six trace gases
 - **Three display modes**, switchable from Home Assistant:
   - **All 16** — dense single page, every value at once
   - **Rotating** — four pages of four values in large type, auto-advancing, with page indicator dots
   - **Highlight** — static page showing temperature, VOC, CO2, and PM2.5 only
 - **Threshold color coding** — green below moderate, amber above moderate, red above high; thresholds drawn from EPA AQI breakpoints, WHO guidance, and OSHA/NIOSH exposure limits
-- **Runtime configuration via ESPHOME** — no reflashing needed to change display mode, rotation speed, sensor polling interval, °F/°C, or backlight brightness
+- **Tight Integration with Home Assistant / ESPHome** — no reflashing needed to change display mode, rotation speed, sensor polling interval, °F/°C, or backlight brightness
 - **Bluetooth proxy** — active proxy with 3 connections plus continuous BLE tracking, extending Home Assistant's Bluetooth range
-- **WiFi fault indicator** — onboard RGB LED blinks red every 5 seconds when disconnected
-- **CO2 calibration to atmostpheric pressure**
-- **Temperature Accuracy** - provides a fused temperature reading based on the published performance of the three temperature sensors.  Available calibration routine for adjusting for device-related heating.  Thermal considerations and isolation were a big part of the case design.
+- **Extensive Calibration Options** - For those who need even more accuracy! Temp, Humidity, CO2 calibrations
+- **Gaussian Sensor Weighting** - provides a fused temperature and humidity readings based on the published performance of the different sensors.
+- **Thermal Optimization** Thermal considerations and isolation were a big part of the case design, trying to prevent sensor/display related heating to effect sensor readings. Case designed to have the hot sensors far from the cooler sensors, and all sensors exposed to outside air instead of inside, and thermal insulation between center chamber and side chambers, and cooling chimneys on the top.
+
+<img src="Images/ThermalFront.PNG" alt="alt text" width="400">
+<img src="Images/ThermalBack.PNG" alt="alt text" width="400">
+<img src="Images/3D_Design.PNG" alt="alt text" width="400">
+
 ---
 
 ## Case 3D Model
@@ -114,8 +120,8 @@ BL - grey - GPIO32
 ## Software/Firmeware Installation
 
 1. Install [ESPHome](https://esphome.io/) (2026.7.3 or later — the config uses `mipi_spi`).
-2. Add `wifi_ssid` and `wifi_password` to your `secrets.yaml`.
-3. Replace the API encryption key, OTA password, and `use_address` with your own.
+2. Add `wifi_ssid` and `wifi_password` to your `secrets.yaml` or add them to this yaml (instead of !secret wifi_ssid and !secret wifi_password)
+3. Replace the AP password (!secret master_skynet_multisensor__ap_password), API encryption key (!secret master_skynet_multisensor__encryption_key), OTA password (!secret master_skynet_multisensor__ota_password), and `use_address` with your own.
 4. Flash over USB the first time. **USB flashing is required at least once** — `sram1_as_iram: true` needs a bootloader from ESP-IDF 5.1 or later, and bootloaders do not update over OTA.
 
 ### Notes on first boot

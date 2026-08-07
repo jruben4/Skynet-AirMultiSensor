@@ -47,7 +47,8 @@ substitutions:
   #    bias_dht -> YAML filter (DHT22 has no on-board mechanism)
   #    bias_scd -> SCD41 temperature_offset  (on-device; also fixes its RH)
   #    bias_sen -> SEN55 temperature_compensation.offset (on-device)
-  #  Note: These were my measurements, YMMV
+  #  Note: 4.0 is the SCD41 factory/ESPHome default. Replace with your
+  #  measured value; do NOT add to it.
   bias_dht:  "4.81" 
   bias_scd:  "7.39" 
   bias_sen:  "4.01" 
@@ -98,7 +99,13 @@ wifi:
   password: !secret wifi_password
   #use_address: 192.168.5.51
   min_auth_mode: WPA2
-
+  # Enable fallback hotspot (captive portal) in case wifi connection fails
+  ap:
+    ssid: ${upper_devicename} Hotspot
+    password: !secret master_skynet_multisensor__ap_password
+    
+captive_portal:
+  
 ota:
   - platform: esphome
     password: !secret master_skynet_multisensor__ota_password
@@ -106,6 +113,10 @@ ota:
 # Enable logging
 logger:
 
+# Enable debug
+debug:
+  update_interval: 60s
+  
 time:
   - platform: homeassistant
     id: my_time
@@ -114,8 +125,8 @@ time:
 api:
   encryption:
     key: !secret master_skynet_multisensor__encryption_key
-  services:
-    - service: set_ambient_pressure
+  actions:
+    - action: set_ambient_pressure
       variables:
         pressure_mbar: int
       then:
@@ -172,7 +183,7 @@ globals:
   - { id: boot_fast_applied, type: bool,     restore_value: no, initial_value: 'false' }
   - { id: boot_fast_done,    type: bool,     restore_value: no, initial_value: 'false' }
   - { id: boot_ticks,        type: uint32_t, restore_value: no, initial_value: '0' }
-  # ---- last ambient pressure pushed in via the API service ----
+  # ---- last ambient pressure pushed in via the API action ----
   - { id: last_pressure,    type: float,    restore_value: no, initial_value: 'NAN' }
   - { id: last_pressure_ms, type: uint32_t, restore_value: no, initial_value: '0' }
   # ---- Humidity values
@@ -467,7 +478,12 @@ text_sensor:
       id: my_ssid
     bssid:
       name: ${upper_devicename} Connected BSSID
-
+      
+  - platform: debug
+    reset_reason:
+      name: "${upper_devicename} Reset Reason"
+      id: reset_reason
+      
 # Roboto Condensed (SIL OFL) pulled from Google Fonts at build time,
 # so no font file is redistributed with this project.
 font:
@@ -579,36 +595,6 @@ sensor:
     accuracy_decimals: 1
     filters:
       - lambda: return x * 9.0 / 5.0 + 32.0;
-
-  - platform: template
-    name: "${upper_devicename} Absolute Humidity"
-    id: abs_humidity
-    unit_of_measurement: "g/m³"
-    state_class: measurement
-    accuracy_decimals: 2
-    update_interval: 60s
-    lambda: |-
-      const float mw = 18.01534f, r = 8.31447215f;
-      float t = id(temp_fused).state, rh = id(rh_fused).state;
-      if (std::isnan(t) || std::isnan(rh)) return NAN;
-      float es = 6.112f * expf(17.67f * t / (t + 243.5f));
-      return (es * rh * mw) / ((273.15f + t) * r);
-
-  - platform: template
-    name: "${upper_devicename} Dew Point"
-    id: dew_point
-    device_class: temperature
-    state_class: measurement
-    unit_of_measurement: "°C"
-    accuracy_decimals: 1
-    update_interval: 60s
-    lambda: |-
-      float t = id(temp_fused).state, rh = id(rh_fused).state;
-      if (std::isnan(t) || std::isnan(rh) || rh <= 0.0f) return NAN;
-      float g = logf(rh / 100.0f) + (17.67f * t) / (t + 243.5f);
-      return (243.5f * g) / (17.67f - g);
-    filters:
-      - round: 1
 
   - platform: scd4x
     id: my_scd41
@@ -820,30 +806,39 @@ sensor:
   - platform: template
     name: "${upper_devicename} Bias Est DHT22"
     id: bias_est_dht
-    lambda: "return id(warm_dht) - id(first_dht);"
     unit_of_measurement: "°C"
     accuracy_decimals: 2
     entity_category: diagnostic
     update_interval: 60s
-
+    lambda: |-  
+      if (!id(reset_reason).has_state()) return NAN;
+      if (id(reset_reason).state.find("Power on") == std::string::npos) return NAN;
+      return id(warm_dht) - id(first_dht);
+      
   - platform: template
     name: "${upper_devicename} Bias Est SCD41"
     id: bias_est_scd
-    lambda: "return id(warm_scd) - id(first_scd);"
     unit_of_measurement: "°C"
     accuracy_decimals: 2
     entity_category: diagnostic
     update_interval: 60s
-
+    lambda: |-  
+      if (!id(reset_reason).has_state()) return NAN;
+      if (id(reset_reason).state.find("Power on") == std::string::npos) return NAN;
+      return id(warm_scd) - id(first_scd);
+      
   - platform: template
     name: "${upper_devicename} Bias Est SEN55"
     id: bias_est_sen
-    lambda: "return id(warm_sen) - id(first_sen);"
     unit_of_measurement: "°C"
     accuracy_decimals: 2
     entity_category: diagnostic
     update_interval: 60s
-
+    lambda: |-  
+      if (!id(reset_reason).has_state()) return NAN;
+      if (id(reset_reason).state.find("Power on") == std::string::npos) return NAN;
+      return id(warm_sen) - id(first_sen);
+      
   - platform: template
     name: "${upper_devicename} Temperature Fused"
     id: temp_fused
@@ -1031,6 +1026,38 @@ sensor:
     entity_category: diagnostic
     update_interval: 60s
 
+  - platform: template
+    name: "${upper_devicename} Absolute Humidity"
+    id: abs_humidity
+    unit_of_measurement: "g/m³"
+    state_class: measurement
+    accuracy_decimals: 2
+    update_interval: 60s
+    lambda: |-
+      const float mw = 18.01534f, r = 8.31447215f;
+      float t = id(temp_fused).state, rh = id(rh_fused).state;
+      if (std::isnan(t) || std::isnan(rh)) return NAN;
+      float es = 6.112f * expf(17.67f * t / (t + 243.5f));
+      return (es * rh * mw) / ((273.15f + t) * r);
+    filters:
+      - round: 1
+        
+  - platform: template
+    name: "${upper_devicename} Dew Point"
+    id: dew_point
+    device_class: temperature
+    state_class: measurement
+    unit_of_measurement: "°C"
+    accuracy_decimals: 1
+    update_interval: 60s
+    lambda: |-
+      float t = id(temp_fused).state, rh = id(rh_fused).state;
+      if (std::isnan(t) || std::isnan(rh) || rh <= 0.0f) return NAN;
+      float g = logf(rh / 100.0f) + (17.67f * t) / (t + 243.5f);
+      return (243.5f * g) / (17.67f - g);
+    filters:
+      - round: 1
+        
 spi:
   clk_pin: GPIO18
   id: spi_a
