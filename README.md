@@ -120,10 +120,12 @@ BL - grey - GPIO32
 
 ## Software/Firmeware Installation
 
-1. Install [ESPHome](https://esphome.io/) (2026.7.3 or later — the config uses `mipi_spi`).
+1. This assumes you're already running [ESPHome](https://esphome.io/) (2026.7.3 or later — the config uses `mipi_spi`).
+2. Copy the contents of skynet-multisensor.yaml from this repo into an empty new device in ESPhome.
 2. Add `wifi_ssid` and `wifi_password` to your `secrets.yaml` or add them to this yaml (instead of !secret wifi_ssid and !secret wifi_password)
-3. Replace the AP password (!secret master_skynet_multisensor__ap_password), API encryption key (!secret master_skynet_multisensor__encryption_key), OTA password (!secret master_skynet_multisensor__ota_password), and `use_address` with your own.
-4. Flash over USB the first time. **USB flashing is required at least once** — `sram1_as_iram: true` needs a bootloader from ESP-IDF 5.1 or later, and bootloaders do not update over OTA.
+3. Replace the AP password (!secret master_skynet_multisensor__ap_password), API encryption key (!secret master_skynet_multisensor__encryption_key), OTA password (!secret master_skynet_multisensor__ota_password), and uncomment and modify `use_address` with your own (optional).
+4. Flash over USB the first time. **USB flashing is required at least once** — `sram1_as_iram: true` needs a bootloader from ESP-IDF 5.1 or later, and bootloaders do not update over OTA.  https://web.esphome.io/ works well.
+5. Add the new device to home assistant / ESPHome integration.  You'll need the encryption key you made in step 3.
 
 ### Notes on first boot
 
