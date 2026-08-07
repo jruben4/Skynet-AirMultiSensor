@@ -1,7 +1,8 @@
 # Skynet-AirMultiSensor
 
-<img src="Images/IMG_0819.jpeg" alt="alt text" width="300">
-<img src="Images/IMG_0817.jpeg" alt="alt text" width="300">
+| Front | Back |
+|:---:|:---:|
+| <img src="Images/IMG_0819.jpeg" width="300"> | <img src="Images/IMG_0817.jpeg" width="300"> |
 
 A ESPHome air-quality and climate monitor built on an ESP32, combining four top-of-class sensors: a DHT22 for temperature and humidity, a Sensirion SCD41 for true NDIR CO2, a Sensirion SEN55 for PM1.0/2.5/4.0/10 particulates plus VOC and NOx indices, and a MICS-4514 for nitrogen dioxide, carbon monoxide, hydrogen, ethanol, methane, and ammonia.  Extensive thermal considerations to provide as accurate sensor readings as possible, along with multiple calibration tools. Tight integration with Home Assistian, with sensors and calibration tools exposed via API. A 240×320 ST7789V color display shows the readings in one of three user-selectable modes, with every value color-coded green, amber, or red against configurable thresholds. Display mode, page rotation speed, sensor polling interval, temperature units, and backlight brightness are all adjustable  from Home Assistant. The device also is as an active Bluetooth proxy and BLE tracker.
 
@@ -38,9 +39,10 @@ A ESPHome air-quality and climate monitor built on an ESP32, combining four top-
 - **Gaussian Sensor Weighting** - provides a fused temperature and humidity readings based on the published performance of the different sensors.
 - **Thermal Optimization** Thermal considerations and isolation were a big part of the case design, trying to prevent sensor/display related heating to effect sensor readings. Case designed to have the hot sensors far from the cooler sensors, and all sensors exposed to outside air instead of inside, and thermal insulation between center chamber and side chambers, and cooling chimneys on the top.
 
-<img src="Images/ThermalFront.PNG" alt="alt text" width="400">
-<img src="Images/ThermalBack.PNG" alt="alt text" width="400">
-<img src="Images/3D_Design.PNG" alt="alt text" width="400">
+| Thermal Front | Thermal Back | 3D Print |
+|:---:|:---:|:---:|
+| <img src="Images/ThermalFront.PNG" alt="alt text" width="260"> | <img src="Images/ThermalBack.PNG" alt="alt text" width="260"> |
+<img src="Images/3D_Design.PNG" alt="alt text" width="260"> |
 
 ---
 
@@ -143,9 +145,10 @@ BL - grey - GPIO32
     - Rotating - 4 sensors on each screen (bigger), rotating through 4 pages (speed adjustable)
     - Highlights - 4 sensors on single screen (bigger) - temp, VOC, PM2.5, and CO2.
 
-<img src="Images/IMG_0815.jpeg" alt="alt text" width="300">
-<img src="Images/IMG_0820.jpeg" alt="alt text" width="200">
-
+<p align="left">
+<img src="Images/IMG_0819.jpeg" alt="alt text" width="300">
+<img src="Images/IMG_0820.jpeg" alt="alt text" width="300">
+</p>
 
 3) Status LED - there is an on-chip light that is controlable, but probably not visable from outside the case.
 
