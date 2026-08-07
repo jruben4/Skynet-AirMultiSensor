@@ -50,7 +50,7 @@ substitutions:
   #  Note: 4.0 is the SCD41 factory/ESPHome default. Replace with your
   #  measured value; do NOT add to it.
   bias_dht:  "4.81" 
-  bias_scd:  "7.39" 
+  bias_scd:  "3.39" 
   bias_sen:  "4.01" 
   # ---- 1-sigma (°C). Datasheet "typ. accuracy" treated as 2-sigma. ----
   sigma_dht: "0.25"
@@ -78,9 +78,13 @@ substitutions:
   cal_arm_timeout: "5min"   # arm switch auto-disarms after this
 
   # ---- cold-start capture ----
-  boot_poll_ms:    "5000"     # fast poll rate until boot temps latch
+  boot_poll_ms:    "10000"    # fast poll rate until boot temps latch
   boot_timeout_tk: "150"      # give up after N x 2s ticks (150 = 5 min)
   warm_delay_ms:   "1800000"  # steady-state sample at 30 min uptime
+  scd_min_ms:      "10000"    # never poll the SCD41 faster than this
+  # Stale-data guard. Must exceed the largest Sensor Update Seconds (600s),
+  # or sensors would go NaN between normal updates.
+  stale_timeout:   "15min"
 
 esphome:
   name: $devicename
@@ -103,9 +107,9 @@ wifi:
   ap:
     ssid: ${upper_devicename} Hotspot
     password: !secret master_skynet_multisensor__ap_password
-    
+
 captive_portal:
-  
+
 ota:
   - platform: esphome
     password: !secret master_skynet_multisensor__ota_password
@@ -116,10 +120,6 @@ logger:
 # Enable debug
 debug:
   update_interval: 60s
-  
-time:
-  - platform: homeassistant
-    id: my_time
 
 # Enable Home Assistant API
 api:
@@ -136,15 +136,19 @@ api:
             id(last_pressure_ms) = millis();
             ESP_LOGI("pressure", "Ambient pressure set to %d mbar", (int) pressure_mbar);
 
+  reboot_timeout: 0s
 esp32_ble_tracker:
   scan_parameters:
-    window: 900ms
-    interval: 1000ms
+    interval: 320ms
+    window: 100ms     # ~31% duty
+    active: false
 
 bluetooth_proxy:
   active: true
+  connection_slots: 1
 
 globals:
+  - { id: is_power_on_boot, type: bool, restore_value: no, initial_value: 'false' }
   - id: page_index
     type: int
     restore_value: no
@@ -341,8 +345,12 @@ interval:
             c->start_poller();
           };
           auto apply_all = [&](uint32_t ms) {
+            // The SCD41 in single_shot needs >5s per measurement, so it
+            // gets its own floor regardless of the requested rate.
+            const uint32_t scd_ms = (ms < (uint32_t) ${scd_min_ms})
+                                  ? (uint32_t) ${scd_min_ms} : ms;
             apply(id(dht22), ms);
-            apply(id(my_scd41), ms);
+            apply(id(my_scd41), scd_ms);
             apply(id(sen55), ms);
             apply(id(mics), ms);
             apply(id(wifi_signal_db), ms);
@@ -478,42 +486,54 @@ text_sensor:
       id: my_ssid
     bssid:
       name: ${upper_devicename} Connected BSSID
-      
+
   - platform: debug
     reset_reason:
       name: "${upper_devicename} Reset Reason"
       id: reset_reason
-      
+      on_value:
+        - lambda: |-
+            std::string r = x;
+            for (auto &c : r) c = (char) tolower(c);
+            // "power-on event" (ESPHome 2025.x+) and "Power On Reset" (older)
+            // both match; "power glitch detected" is excluded.
+            id(is_power_on_boot) = (r.find("power") != std::string::npos)
+                                && (r.find("glitch") == std::string::npos);
+            ESP_LOGI("boot", "Reset reason '%s' -> bias estimate %s",
+                     x.c_str(), id(is_power_on_boot) ? "enabled" : "suppressed");
+
 # Roboto Condensed (SIL OFL) pulled from Google Fonts at build time,
 # so no font file is redistributed with this project.
+#  Sizes are near the layout limits - see the display lambda for the
+#  row pitch each one assumes.
 font:
   - file:
       type: gfonts
       family: Roboto Condensed
       weight: 400
     id: font_label
-    size: 12
+    size: 10
     glyphs: &glyphset "!\"%'()+=,-_.:/°µ³0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz "
   - file:
       type: gfonts
       family: Roboto Condensed
       weight: 700
     id: font_value
-    size: 24
+    size: 27
     glyphs: *glyphset
   - file:
       type: gfonts
       family: Roboto Condensed
       weight: 400
     id: font_big_label
-    size: 18
+    size: 22
     glyphs: *glyphset
   - file:
       type: gfonts
       family: Roboto Condensed
       weight: 700
     id: font_big
-    size: 44
+    size: 46
     glyphs: *glyphset
 
 color:
@@ -575,6 +595,9 @@ sensor:
       # DHT22 has no on-board offset, so correct it here.
       filters:
         - lambda: return x - ${bias_dht};
+        - timeout:
+            timeout: ${stale_timeout}
+            value: nan
       on_value:
         - lambda: |-
             if (std::isnan(id(first_dht)) && !std::isnan(x)) {
@@ -584,6 +607,10 @@ sensor:
     humidity:
       name: "${upper_devicename} DHT22 Humidity"
       id: Humidity
+      filters:
+        - timeout:
+            timeout: ${stale_timeout}
+            value: nan
     update_interval: 60s
 
   - platform: copy
@@ -606,9 +633,14 @@ sensor:
     # See the scd_asc note in substitutions - ASC needs a weekly ~400 ppm
     # background to stay honest.
     automatic_self_calibration: ${scd_asc}
+    measurement_mode: single_shot
     co2:
       name: "${upper_devicename} CO2"
       id: scd_co2
+      filters:
+        - timeout:
+            timeout: ${stale_timeout}
+            value: nan
     temperature:
       name: "${upper_devicename} SD41 Temperature"
       id: scd_temp
@@ -618,9 +650,17 @@ sensor:
               id(first_scd) = x;
               ESP_LOGI("boot_temp", "SCD41 first reading: %.2f C", x);
             }
+      filters:
+        - timeout:
+            timeout: ${stale_timeout}
+            value: nan
     humidity:
       name: "${upper_devicename} SD41 Humidity"
       id: scd_humidity
+      filters:
+        - timeout:
+            timeout: ${stale_timeout}
+            value: nan
 
   - platform: sen5x
     id: sen55
@@ -629,18 +669,34 @@ sensor:
       name: "${upper_devicename} PM <1µm Weight concentration"
       id: pm_1_0
       accuracy_decimals: 1
+      filters:
+        - timeout:
+            timeout: ${stale_timeout}
+            value: nan
     pm_2_5:
       name: "${upper_devicename} PM <2.5µm Weight concentration"
       id: pm_2_5
       accuracy_decimals: 1
+      filters:
+        - timeout:
+            timeout: ${stale_timeout}
+            value: nan
     pm_4_0:
       name: "${upper_devicename} PM <4µm Weight concentration"
       id: pm_4_0
       accuracy_decimals: 1
+      filters:
+        - timeout:
+            timeout: ${stale_timeout}
+            value: nan
     pm_10_0:
       name: "${upper_devicename} PM <10µm Weight concentration"
       id: pm_10_0
       accuracy_decimals: 1
+      filters:
+        - timeout:
+            timeout: ${stale_timeout}
+            value: nan
     temperature:
       name: "${upper_devicename} Sen55 Temperature"
       accuracy_decimals: 1
@@ -651,18 +707,34 @@ sensor:
               id(first_sen) = x;
               ESP_LOGI("boot_temp", "SEN55 first reading: %.2f C", x);
             }
+      filters:
+        - timeout:
+            timeout: ${stale_timeout}
+            value: nan
     humidity:
       name: "${upper_devicename} Sen55 Humidity"
       accuracy_decimals: 0
       id: sen_hum
+      filters:
+        - timeout:
+            timeout: ${stale_timeout}
+            value: nan
     nox:
       name: "${upper_devicename} NOx"
       unit_of_measurement: "NOx Index"
       id: sen_nox
+      filters:
+        - timeout:
+            timeout: ${stale_timeout}
+            value: nan
     voc:
       name: "${upper_devicename} VOC"
       unit_of_measurement: "VOC Index"
       id: sen_voc
+      filters:
+        - timeout:
+            timeout: ${stale_timeout}
+            value: nan
       algorithm_tuning:
         index_offset: 100
         learning_time_offset_hours: 12
@@ -689,21 +761,45 @@ sensor:
     nitrogen_dioxide:
       name: ${upper_devicename} Nitrogen Dioxide
       id: mics_no2
+      filters:
+        - timeout:
+            timeout: ${stale_timeout}
+            value: nan
     carbon_monoxide:
       name: ${upper_devicename} Carbon Monoxide
       id: mics_co
+      filters:
+        - timeout:
+            timeout: ${stale_timeout}
+            value: nan
     hydrogen:
       name: ${upper_devicename} Hydrogen
       id: mics_h2
+      filters:
+        - timeout:
+            timeout: ${stale_timeout}
+            value: nan
     ethanol:
       name: ${upper_devicename} Ethanol
       id: mics_etoh
+      filters:
+        - timeout:
+            timeout: ${stale_timeout}
+            value: nan
     methane:
       name: ${upper_devicename} Methane
       id: mics_ch4
+      filters:
+        - timeout:
+            timeout: ${stale_timeout}
+            value: nan
     ammonia:
       name: ${upper_devicename} Ammonia
       id: mics_nh3
+      filters:
+        - timeout:
+            timeout: ${stale_timeout}
+            value: nan
     update_interval: 60s
 
   # ---- ambient pressure pushed in from Home Assistant ----
@@ -810,11 +906,10 @@ sensor:
     accuracy_decimals: 2
     entity_category: diagnostic
     update_interval: 60s
-    lambda: |-  
-      if (!id(reset_reason).has_state()) return NAN;
-      if (id(reset_reason).state.find("Power on") == std::string::npos) return NAN;
+    lambda: |-
+      if (!id(is_power_on_boot)) return NAN;
       return id(warm_dht) - id(first_dht);
-      
+
   - platform: template
     name: "${upper_devicename} Bias Est SCD41"
     id: bias_est_scd
@@ -822,11 +917,10 @@ sensor:
     accuracy_decimals: 2
     entity_category: diagnostic
     update_interval: 60s
-    lambda: |-  
-      if (!id(reset_reason).has_state()) return NAN;
-      if (id(reset_reason).state.find("Power on") == std::string::npos) return NAN;
+    lambda: |-
+      if (!id(is_power_on_boot)) return NAN;
       return id(warm_scd) - id(first_scd);
-      
+
   - platform: template
     name: "${upper_devicename} Bias Est SEN55"
     id: bias_est_sen
@@ -834,11 +928,10 @@ sensor:
     accuracy_decimals: 2
     entity_category: diagnostic
     update_interval: 60s
-    lambda: |-  
-      if (!id(reset_reason).has_state()) return NAN;
-      if (id(reset_reason).state.find("Power on") == std::string::npos) return NAN;
+    lambda: |-
+      if (!id(is_power_on_boot)) return NAN;
       return id(warm_sen) - id(first_sen);
-      
+
   - platform: template
     name: "${upper_devicename} Temperature Fused"
     id: temp_fused
@@ -1031,7 +1124,7 @@ sensor:
     id: abs_humidity
     unit_of_measurement: "g/m³"
     state_class: measurement
-    accuracy_decimals: 2
+    accuracy_decimals: 1
     update_interval: 60s
     lambda: |-
       const float mw = 18.01534f, r = 8.31447215f;
@@ -1041,7 +1134,7 @@ sensor:
       return (es * rh * mw) / ((273.15f + t) * r);
     filters:
       - round: 1
-        
+
   - platform: template
     name: "${upper_devicename} Dew Point"
     id: dew_point
@@ -1057,7 +1150,7 @@ sensor:
       return (243.5f * g) / (17.67f - g);
     filters:
       - round: 1
-        
+
 spi:
   clk_pin: GPIO18
   id: spi_a
@@ -1114,16 +1207,18 @@ display:
         if (s->state >= mod)  return id(c_yellow);
         return id(c_green);
       };
+      // Dense cell: label 10px at cy, value 27px at cy+11. Row pitch 40.
       auto cell = [&](int cx, int cy, const char *label,
                       esphome::sensor::Sensor *s, int dec, float mod, float high) {
         it.print(cx, cy, id(font_label), id(c_dim), TextAlign::TOP_CENTER, label);
-        it.printf(cx, cy + 13, id(font_value), pick(s, mod, high),
+        it.printf(cx, cy + 11, id(font_value), pick(s, mod, high),
                   TextAlign::TOP_CENTER, "%s", v(s, dec).c_str());
       };
+      // Big cell: label 22px at cy, value 46px at cy+26.
       auto big = [&](int cx, int cy, const char *label,
                      esphome::sensor::Sensor *s, int dec, float mod, float high) {
         it.print(cx, cy, id(font_big_label), id(c_dim), TextAlign::TOP_CENTER, label);
-        it.printf(cx, cy + 22, id(font_big), pick(s, mod, high),
+        it.printf(cx, cy + 26, id(font_big), pick(s, mod, high),
                   TextAlign::TOP_CENTER, "%s", v(s, dec).c_str());
       };
       const int A = 60;    // left column centre
@@ -1188,21 +1283,21 @@ display:
           }
         }
       } else {
-        // ---------- All 16: dense ----------
-        cell(A,   4, t_label,     t_sens,          1, t_mod,        t_high);
-        cell(B,   4, "RH %",      id(rh_fused),    0, ${rh_mod},    ${rh_high});
-        cell(A,  43, "AH g/m³",   id(abs_humidity),1, ${ah_mod},    ${ah_high});
-        cell(B,  43, "CO2 ppm",   id(scd_co2),     0, ${co2_mod},   ${co2_high});
-        cell(A,  82, "PM1.0 µg",  id(pm_1_0),      1, ${pm1_mod},   ${pm1_high});
-        cell(B,  82, "PM2.5 µg",  id(pm_2_5),      1, ${pm25_mod},  ${pm25_high});
-        cell(A, 121, "PM4.0 µg",  id(pm_4_0),      1, ${pm4_mod},   ${pm4_high});
-        cell(B, 121, "PM10 µg",   id(pm_10_0),     1, ${pm10_mod},  ${pm10_high});
+        // ---------- All 16: dense. Rows pitched 40px from y=0. ----------
+        cell(A,   0, t_label,     t_sens,          1, t_mod,        t_high);
+        cell(B,   0, "RH %",      id(rh_fused),    0, ${rh_mod},    ${rh_high});
+        cell(A,  40, "AH g/m³",   id(abs_humidity),1, ${ah_mod},    ${ah_high});
+        cell(B,  40, "CO2 ppm",   id(scd_co2),     0, ${co2_mod},   ${co2_high});
+        cell(A,  80, "PM1.0 µg",  id(pm_1_0),      1, ${pm1_mod},   ${pm1_high});
+        cell(B,  80, "PM2.5 µg",  id(pm_2_5),      1, ${pm25_mod},  ${pm25_high});
+        cell(A, 120, "PM4.0 µg",  id(pm_4_0),      1, ${pm4_mod},   ${pm4_high});
+        cell(B, 120, "PM10 µg",   id(pm_10_0),     1, ${pm10_mod},  ${pm10_high});
         cell(A, 160, "VOC",       id(sen_voc),     0, ${voc_mod},   ${voc_high});
         cell(B, 160, "NOx",       id(sen_nox),     0, ${nox_mod},   ${nox_high});
-        cell(A, 199, "NO2 ppm",   id(mics_no2),    2, ${no2_mod},   ${no2_high});
-        cell(B, 199, "CO ppm",    id(mics_co),     1, ${co_mod},    ${co_high});
-        cell(A, 238, "H2 ppm",    id(mics_h2),     1, ${h2_mod},    ${h2_high});
-        cell(B, 238, "EtOH ppm",  id(mics_etoh),   1, ${etoh_mod},  ${etoh_high});
-        cell(A, 277, "CH4 ppm",   id(mics_ch4),    0, ${ch4_mod},   ${ch4_high});
-        cell(B, 277, "NH3 ppm",   id(mics_nh3),    1, ${nh3_mod},   ${nh3_high});
+        cell(A, 200, "NO2 ppm",   id(mics_no2),    2, ${no2_mod},   ${no2_high});
+        cell(B, 200, "CO ppm",    id(mics_co),     1, ${co_mod},    ${co_high});
+        cell(A, 240, "H2 ppm",    id(mics_h2),     1, ${h2_mod},    ${h2_high});
+        cell(B, 240, "EtOH ppm",  id(mics_etoh),   1, ${etoh_mod},  ${etoh_high});
+        cell(A, 280, "CH4 ppm",   id(mics_ch4),    0, ${ch4_mod},   ${ch4_high});
+        cell(B, 280, "NH3 ppm",   id(mics_nh3),    1, ${nh3_mod},   ${nh3_high});
       }
