@@ -41,7 +41,7 @@ A ESPHome air-quality and climate monitor built on an ESP32, combining four top-
 
 | Thermal Front | Thermal Back | 3D Print |
 |:---:|:---:|:---:|
-| <img src="Images/ThermalFront.PNG" alt="alt text" width="260"> | <img src="Images/ThermalBack.PNG" alt="alt text" width="260"> | <img src="Images/3D_Design.PNG" alt="alt text" width="260"> |
+| <img src="Images/ThermalFront.PNG" alt="alt text" width="260"> | <img src="Images/ThermalBack.PNG" alt="alt text" width="260"> | <img src="Images/3D_Design.png" alt="alt text" width="260"> |
 
 ---
 
