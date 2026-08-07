@@ -47,11 +47,10 @@ substitutions:
   #    bias_dht -> YAML filter (DHT22 has no on-board mechanism)
   #    bias_scd -> SCD41 temperature_offset  (on-device; also fixes its RH)
   #    bias_sen -> SEN55 temperature_compensation.offset (on-device)
-  #  Note: 4.0 is the SCD41 factory/ESPHome default. Replace with your
-  #  measured value; do NOT add to it.
-  bias_dht:  "0.0"
-  bias_scd:  "4.0"
-  bias_sen:  "0.0"
+  #  Note: These were my measurements, YMMV
+  bias_dht:  "4.81" 
+  bias_scd:  "7.39" 
+  bias_sen:  "4.01" 
   # ---- 1-sigma (°C). Datasheet "typ. accuracy" treated as 2-sigma. ----
   sigma_dht: "0.25"
   sigma_scd: "0.40"
@@ -67,6 +66,15 @@ substitutions:
   sigma_scd_rh: "3.00"
   sigma_sen_rh: "2.25"
   rh_outlier_k: "3.0"
+
+  # ---- SCD41 CO2 calibration ----
+  #  ASC assumes the sensor sees a ~400 ppm background at least weekly.
+  #  In a room that never fully vents that assumption fails silently and
+  #  drags the baseline. Set scd_asc to "false" if this unit lives in
+  #  such a room, and use the forced-calibration button instead.
+  scd_asc:   "true"
+  fcal_ppm:  "420"       # outdoor reference for forced recalibration
+  cal_arm_timeout: "5min"   # arm switch auto-disarms after this
 
   # ---- cold-start capture ----
   boot_poll_ms:    "5000"     # fast poll rate until boot temps latch
@@ -88,12 +96,12 @@ esp32:
 wifi:
   ssid: !secret wifi_ssid
   password: !secret wifi_password
-  use_address: 192.168.5.51
+  #use_address: 192.168.5.51
   min_auth_mode: WPA2
 
 ota:
   - platform: esphome
-    password: !secret skynet_multisensor__ota_password
+    password: !secret master_skynet_multisensor__ota_password
 
 # Enable logging
 logger:
@@ -105,7 +113,7 @@ time:
 # Enable Home Assistant API
 api:
   encryption:
-    key: !secret skynet_multisensor__encryption_key
+    key: !secret master_skynet_multisensor__encryption_key
   services:
     - service: set_ambient_pressure
       variables:
@@ -115,7 +123,7 @@ api:
             id(my_scd41)->set_ambient_pressure_compensation(pressure_mbar);
             id(last_pressure) = (float) pressure_mbar;
             id(last_pressure_ms) = millis();
-            ESP_LOGI("pressure", "Ambient pressure set to %d mbar", pressure_mbar);
+            ESP_LOGI("pressure", "Ambient pressure set to %d mbar", (int) pressure_mbar);
 
 esp32_ble_tracker:
   scan_parameters:
@@ -191,6 +199,25 @@ switch:
       - lambda: |-
           id(force_redraw) = true;
 
+  # Safety interlock for the forced CO2 calibration. Must be ON before the
+  # calibration button will do anything. Auto-disarms after cal_arm_timeout
+  # and never survives a reboot, so it cannot be left armed by accident.
+  - platform: template
+    name: "${upper_devicename} Arm CO2 Calibration"
+    id: cal_armed
+    optimistic: true
+    restore_mode: ALWAYS_OFF
+    entity_category: "config"
+    icon: "mdi:lock-open-variant"
+    on_turn_on:
+      - logger.log:
+          level: WARN
+          format: "CO2 forced calibration ARMED - disarms in ${cal_arm_timeout}"
+      - delay: ${cal_arm_timeout}
+      - switch.turn_off: cal_armed
+    on_turn_off:
+      - logger.log: "CO2 forced calibration disarmed"
+
 button:
   # Manual fan autoclean for the SEN55. The optical chamber loads with dust
   # over months; the fan spins up to ~10s at full speed to blow it clear.
@@ -202,6 +229,34 @@ button:
     on_press:
       - logger.log: "SEN55 manual fan autoclean started"
       - sen5x.start_fan_autoclean: sen55
+
+  # Forced recalibration of the SCD41 CO2 baseline.
+  #  PROCEDURE: take the unit outdoors (or to a well-ventilated space),
+  #  leave it powered and measuring for at least 3 minutes so the reading
+  #  stabilises, turn ON "Arm CO2 Calibration", THEN press this.
+  #  It overwrites the stored baseline with fcal_ppm. Pressing it indoors
+  #  will corrupt the calibration.
+  - platform: template
+    name: "${upper_devicename} Force CO2 Calibration"
+    id: scd41_force_cal
+    entity_category: config
+    icon: "mdi:target"
+    on_press:
+      - if:
+          condition:
+            switch.is_on: cal_armed
+          then:
+            - logger.log:
+                format: "SCD41 forced recalibration to %d ppm - hope you are outside"
+                args: ['${fcal_ppm}']
+            - scd4x.perform_forced_calibration:
+                value: ${fcal_ppm}
+                id: my_scd41
+            - switch.turn_off: cal_armed
+          else:
+            - logger.log:
+                level: WARN
+                format: "Forced calibration IGNORED - arm it first"
 
 select:
   - platform: template
@@ -562,6 +617,9 @@ sensor:
     # Self-heating handled on-device. This also corrects the RH output,
     # so no YAML filter and no es() rescaling in rh_fused for this sensor.
     temperature_offset: ${bias_scd}°C
+    # See the scd_asc note in substitutions - ASC needs a weekly ~400 ppm
+    # background to stay honest.
+    automatic_self_calibration: ${scd_asc}
     co2:
       name: "${upper_devicename} CO2"
       id: scd_co2

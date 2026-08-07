@@ -64,6 +64,8 @@ All 3D printable files and print profiles for the enclosures are hosted on Maker
 
 **This is not a safety device.** The MICS-4514 is an uncalibrated metal-oxide sensor whose readings drift substantially with temperature and humidity; its ppm figures are useful as relative trends, not absolute concentrations. Do not rely on the carbon monoxide reading for life safety — use a certified CO alarm. The same applies to the methane channel and gas leak detection.
 
+This project was made partially with assistance using Claude. 3D models were designed manually using OnShape.
+
 ---
 
 ## Wiring
@@ -153,7 +155,7 @@ BL - grey - GPIO32
 
 <img src="Images/sensors.png" alt="alt text" width="300">
 
-1) Sensor data exposed to home assistant.
+1) Sensor data exposed to home assistant shown above.  Note "Temperature Fused" and "Humidity Fused" are caculated from all 3 sensors and adjusted by known sensor accuracy.  Absolute Humidity and Dew Point are also calculated from the fused data.
 2) Wifi data also available "Diagnostic" panel - not pictured.
 
 ---
@@ -167,14 +169,25 @@ action: esphome.skynet_multisensor_set_ambient_pressure
 data:
   pressure_mbar: "{{ states('sensor.air_pressure') | int(0) }}"
 ```
+You can see the last "sent" pressure and how long ago it was updated to make sure your automation is feeding ESPHome correctly.
 
-2) Temperature bias - there are three sensors that report temps (DHT22, SCD41, SEN55).  Care was taken to try to thermally isolate, but they still may experience local heating as the whole sensor package warms up over time.  Let the device become room temperature (off for an hour) and then start it up.  Under the Diagnostic window in home assistant you'll find Boot temps and Warm temps (after 30 min) from the sensors, and a Bias estimate which is how much the temp rose (assuming the room stayed the same over those 30 minutes).  Put these values in the esphome YAML file, at the top under substiutions you'll find "bias_dht", "bias_scd", and "bias_sen".  Bias_SCD has a manufacture default of 4C.  If you measure something different, replace this (don't add/subtract from it).
+<img src="Images/Pressure1.png" alt="alt text" width="300">
+<img src="Images/Pressure2.png" alt="alt text" width="300">
+
+2) Temperature bias - there are three sensors that report temps (DHT22, SCD41, SEN55).  Care was taken to try to thermally isolate, but they still  experience local heating as the whole sensor package warms up over time.  Let the device become cold/room temperature (off for at least an hour) and then start it up.  Under the Diagnostic window in home assistant you'll find Boot temps and Warm temps (after 30 min) from the sensors, and a Bias estimate which is how much the temp rose (assuming the room stayed the same over those 30 minutes).  Put these values in the esphome YAML file, at the top under substiutions you'll find "bias_dht", "bias_scd", and "bias_sen".  I have the offsets I measured on mine as the defaults.
+
+<img src="Images/TempCorrection1.png" alt="alt text" width="300">
+<img src="Images/TempCorrection2.png" alt="alt text" width="300">
+<img src="Images/TempCorrection3.png" alt="alt text" width="200">
 
 3) If you REALLY want you can calibrate the relative humidity with a salt calibration, these values are also in the YAML "rhbias_dht", etc.
 
 4) SCD41 CO2 Automatic self-calibration assumes the sensor sees ~400 ppm background weekly. If this lives in a room that never fully vents, ASC will drag your baseline wrong and you won't know. There is a forced-calibration button (target 420 ppm, after 3+ min outdoors) so you can correct it without reflashing.  You will need to set "scd_asc" to false in the yaml if you plan on occasional manual outdoor calibrations, otherwise it will auto-calibrate back to the room CO2 in a week.  There is an ARM CO2 Calibration button that needs to be on first, to prevent accidental calibration runs.  Let it power on outside for 5 minutes to let the readings settle before running calibration.  If your outdoor CO2 isn't around 420, this can be adjusted in the YAML as well to calibrate it to the current outdoor CO2.
 
-5) The Sen55 will autoclean weekly.  There is a button exposed to home assistant if you would like to manually trigger a clean (the fan spins up to ~10s at full speed to blow it clear.)
+<img src="Images/CO2Calibration.png" alt="alt text" width="300">
+
+5) The Sen55 will autoclean weekly.  There is a button exposed to home assistant - "Clean SEN55 Fan" - if you would like to manually trigger a clean (the fan spins up to ~10s at full speed to blow it clear.)
+
 ---
 
 ## References
