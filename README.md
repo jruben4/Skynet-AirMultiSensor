@@ -5,9 +5,22 @@
 A ESPHome air-quality and climate monitor built on an ESP32-WROOM board, combining four sensors across two I²C buses: a DHT22 for temperature and humidity (with absolute humidity derived in firmware), a Sensirion SCD41 for true NDIR CO2, a Sensirion SEN55 for PM1.0/2.5/4.0/10 particulates plus VOC and NOx indices, and a MICS-4514 for nitrogen dioxide, carbon monoxide, hydrogen, ethanol, methane, and ammonia — sixteen live values in total, all exposed to Home Assistant over the encrypted ESPHome API. A 240×320 ST7789V SPI display shows the readings in one of three user-selectable modes, with every value color-coded green, amber, or red against configurable thresholds. Display mode, page rotation speed, sensor polling interval, temperature units, and backlight brightness are all adjustable at runtime from Home Assistant without reflashing. The device doubles as an active Bluetooth proxy and BLE tracker.
 
 ---
+## 📋 Table of Contents
 
-## Case 3D Model
-https://makerworld.com/en/models/3134930-skynet-air-multisensor
+- [Features](#features)
+- [3D Model](#case-3d-model)
+- [Hardware Bill of Materials (BOM) & Purchase Links](#hardware)
+- [Saftey Notice](#safety-notice)
+- [Wiring](#wiring)
+- [Assembly](#assembly)
+- [Software Installation](#softwarefirmeware-installation)
+- [Home Assistant Integration](#home-assistant-integration)
+- [Calibration](#calibrations)
+- [References](#references)
+ 
+ ---
+
+
 
 ## Features
 
@@ -24,7 +37,14 @@ https://makerworld.com/en/models/3134930-skynet-air-multisensor
 - **Temperature Accuracy** - provides a fused temperature reading based on the published performance of the three temperature sensors.  Available calibration routine for adjusting for device-related heating.  Thermal considerations and isolation were a big part of the case design.
 ---
 
-## Hardware
+## Case 3D Model
+All 3D printable files and print profiles for the enclosures are hosted on MakerWorld:
+
+👉 [AirMultiSensor Case on MakerWorld](https://makerworld.com/en/models/3134930-skynet-air-multisensor)
+
+---
+
+## 🛒 Hardware Bill of Materials (BOM) & Purchase Links
 
 | Component | Part | Interface | Link |
 |---|---|---|---|
@@ -152,7 +172,7 @@ data:
 
 3) If you REALLY want you can calibrate the relative humidity with a salt calibration, these values are also in the YAML "rhbias_dht", etc.
 
-4) SCD41 CO2 Automatic self-calibration assumes the sensor sees ~400 ppm background weekly. If this lives in a room that never fully vents, ASC will drag your baseline wrong and you won't know. There is a forced-calibration button (target 420 ppm, after 3+ min outdoors) so you can correct it without reflashing.
+4) SCD41 CO2 Automatic self-calibration assumes the sensor sees ~400 ppm background weekly. If this lives in a room that never fully vents, ASC will drag your baseline wrong and you won't know. There is a forced-calibration button (target 420 ppm, after 3+ min outdoors) so you can correct it without reflashing.  You will need to set "scd_asc" to false in the yaml if you plan on occasional manual outdoor calibrations, otherwise it will auto-calibrate back to the room CO2 in a week.  There is an ARM CO2 Calibration button that needs to be on first, to prevent accidental calibration runs.  Let it power on outside for 5 minutes to let the readings settle before running calibration.  If your outdoor CO2 isn't around 420, this can be adjusted in the YAML as well to calibrate it to the current outdoor CO2.
 
 5) The Sen55 will autoclean weekly.  There is a button exposed to home assistant if you would like to manually trigger a clean (the fan spins up to ~10s at full speed to blow it clear.)
 ---
