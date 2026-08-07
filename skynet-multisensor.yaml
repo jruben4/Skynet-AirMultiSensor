@@ -41,6 +41,38 @@ substitutions:
   nh3_mod:    "25"      # NIOSH REL
   nh3_high:   "50"      # OSHA PEL
 
+  # ---- self-heating corrections (°C) ----
+  #  Each equals that sensor's steady-state rise, i.e. the "Bias Est ..."
+  #  entity after a cold start + 30 min. Where it is applied differs:
+  #    bias_dht -> YAML filter (DHT22 has no on-board mechanism)
+  #    bias_scd -> SCD41 temperature_offset  (on-device; also fixes its RH)
+  #    bias_sen -> SEN55 temperature_compensation.offset (on-device)
+  #  Note: 4.0 is the SCD41 factory/ESPHome default. Replace with your
+  #  measured value; do NOT add to it.
+  bias_dht:  "0.0"
+  bias_scd:  "4.0"
+  bias_sen:  "0.0"
+  # ---- 1-sigma (°C). Datasheet "typ. accuracy" treated as 2-sigma. ----
+  sigma_dht: "0.25"
+  sigma_scd: "0.40"
+  sigma_sen: "0.225"
+  outlier_k: "3.0"     # residual gate, in sigmas
+
+  # ---- residual RH bias (%RH), from salt calibration. Usually 0. ----
+  rhbias_dht: "0.0"
+  rhbias_scd: "0.0"
+  rhbias_sen: "0.0"
+  # ---- 1-sigma (%RH) ----
+  sigma_dht_rh: "1.75"   # spec ±2 inflated to ±3.5; use 1.0 if verified
+  sigma_scd_rh: "3.00"
+  sigma_sen_rh: "2.25"
+  rh_outlier_k: "3.0"
+
+  # ---- cold-start capture ----
+  boot_poll_ms:    "5000"     # fast poll rate until boot temps latch
+  boot_timeout_tk: "150"      # give up after N x 2s ticks (150 = 5 min)
+  warm_delay_ms:   "1800000"  # steady-state sample at 30 min uptime
+
 esphome:
   name: $devicename
   friendly_name: $upper_devicename
@@ -56,11 +88,12 @@ esp32:
 wifi:
   ssid: !secret wifi_ssid
   password: !secret wifi_password
+  use_address: 192.168.5.51
   min_auth_mode: WPA2
 
 ota:
   - platform: esphome
-    password: !secret master_skynet_multisensor__ota_password
+    password: !secret skynet_multisensor__ota_password
 
 # Enable logging
 logger:
@@ -72,13 +105,17 @@ time:
 # Enable Home Assistant API
 api:
   encryption:
-    key: !secret master_skynet_multisensor__encryption_key
+    key: !secret skynet_multisensor__encryption_key
   services:
     - service: set_ambient_pressure
       variables:
         pressure_mbar: int
       then:
-        - lambda: "id(my_scd41)->set_ambient_pressure_compensation(pressure_mbar);"
+        - lambda: |-
+            id(my_scd41)->set_ambient_pressure_compensation(pressure_mbar);
+            id(last_pressure) = (float) pressure_mbar;
+            id(last_pressure_ms) = millis();
+            ESP_LOGI("pressure", "Ambient pressure set to %d mbar", pressure_mbar);
 
 esp32_ble_tracker:
   scan_parameters:
@@ -111,6 +148,29 @@ globals:
     type: bool
     restore_value: no
     initial_value: 'true'
+  - { id: g_sigma, type: float, restore_value: no, initial_value: '0' }
+  - { id: g_chi2,  type: float, restore_value: no, initial_value: '0' }
+  - { id: g_n,     type: int,   restore_value: no, initial_value: '0' }
+  # ---- first temperature reading after boot, latched once, never restored ----
+  - { id: first_dht, type: float, restore_value: no, initial_value: 'NAN' }
+  - { id: first_scd, type: float, restore_value: no, initial_value: 'NAN' }
+  - { id: first_sen, type: float, restore_value: no, initial_value: 'NAN' }
+  # ---- steady-state temperature sampled at warm_delay_ms uptime ----
+  - { id: warm_dht, type: float, restore_value: no, initial_value: 'NAN' }
+  - { id: warm_scd, type: float, restore_value: no, initial_value: 'NAN' }
+  - { id: warm_sen, type: float, restore_value: no, initial_value: 'NAN' }
+  - { id: warm_latched, type: bool, restore_value: no, initial_value: 'false' }
+  # ---- cold-start fast-poll phase ----
+  - { id: boot_fast_applied, type: bool,     restore_value: no, initial_value: 'false' }
+  - { id: boot_fast_done,    type: bool,     restore_value: no, initial_value: 'false' }
+  - { id: boot_ticks,        type: uint32_t, restore_value: no, initial_value: '0' }
+  # ---- last ambient pressure pushed in via the API service ----
+  - { id: last_pressure,    type: float,    restore_value: no, initial_value: 'NAN' }
+  - { id: last_pressure_ms, type: uint32_t, restore_value: no, initial_value: '0' }
+  # ---- Humidity values
+  - { id: g_rh_sigma, type: float, restore_value: no, initial_value: '0' }
+  - { id: g_rh_chi2,  type: float, restore_value: no, initial_value: '0' }
+  - { id: g_rh_n,     type: int,   restore_value: no, initial_value: '0' }
 
 switch:
   - platform: restart
@@ -130,6 +190,18 @@ switch:
     on_turn_off:
       - lambda: |-
           id(force_redraw) = true;
+
+button:
+  # Manual fan autoclean for the SEN55. The optical chamber loads with dust
+  # over months; the fan spins up to ~10s at full speed to blow it clear.
+  - platform: template
+    name: "${upper_devicename} Clean SEN55 Fan"
+    id: sen55_fan_clean
+    entity_category: config
+    icon: "mdi:fan"
+    on_press:
+      - logger.log: "SEN55 manual fan autoclean started"
+      - sen5x.start_fan_autoclean: sen55
 
 select:
   - platform: template
@@ -190,29 +262,100 @@ number:
           id(apply_intervals) = true;
 
 interval:
-  # ---- apply sensor update intervals ----
+  # ---- sensor poll-rate manager ----
+  #  Phase 1: poll fast (boot_poll_ms) until all three boot temps latch.
+  #  Phase 2: switch to the user-selected Sensor Update Seconds.
   - interval: 2s
     then:
       - lambda: |-
+          auto apply = [&](esphome::PollingComponent *c, uint32_t ms) {
+            if (c == nullptr || !c->is_ready()) return;
+            c->stop_poller();
+            c->set_update_interval(ms);
+            c->start_poller();
+          };
+          auto apply_all = [&](uint32_t ms) {
+            apply(id(dht22), ms);
+            apply(id(my_scd41), ms);
+            apply(id(sen55), ms);
+            apply(id(mics), ms);
+            apply(id(wifi_signal_db), ms);
+            // derived / fused
+            apply(id(temp_fused), ms);
+            apply(id(temp_fused_sigma), ms);
+            apply(id(temp_fused_chi2), ms);
+            apply(id(rh_fused), ms);
+            apply(id(rh_fused_sigma), ms);
+            apply(id(rh_fused_chi2), ms);
+            apply(id(abs_humidity), ms);
+            apply(id(dew_point), ms);
+          };
+
+          // ---------- Phase 1: cold-start fast polling ----------
+          if (!id(boot_fast_done)) {
+            if (!id(boot_fast_applied)) {
+              // wait until the three temperature owners exist, then set fast rate once
+              if (!(id(dht22).is_ready() && id(my_scd41).is_ready() && id(sen55).is_ready())) {
+                return;
+              }
+              id(boot_fast_applied) = true;
+              apply_all(${boot_poll_ms});
+              ESP_LOGI("intervals", "Cold start: polling at %u ms until boot temps latch",
+                       (unsigned) ${boot_poll_ms});
+              return;
+            }
+
+            id(boot_ticks)++;
+            bool all_latched = !std::isnan(id(first_dht))
+                            && !std::isnan(id(first_scd))
+                            && !std::isnan(id(first_sen));
+            if (!all_latched && id(boot_ticks) < ${boot_timeout_tk}) {
+              return;
+            }
+            id(boot_fast_done) = true;
+            id(apply_intervals) = true;
+            if (all_latched) {
+              ESP_LOGI("intervals", "Boot temps latched: DHT %.2f, SCD %.2f, SEN %.2f C",
+                       id(first_dht), id(first_scd), id(first_sen));
+            } else {
+              ESP_LOGW("intervals", "Boot temp capture timed out, using user rate");
+            }
+          }
+
+          // ---------- Phase 2: user-selected rate ----------
           if (!id(apply_intervals)) {
             return;
           }
           id(apply_intervals) = false;
           uint32_t ms = (uint32_t) (id(sensor_update_seconds).state * 1000.0f);
           if (ms < 5000) ms = 5000;
-          auto apply = [&](esphome::PollingComponent *c) {
-            if (c == nullptr || !c->is_ready()) return;
-            c->stop_poller();
-            c->set_update_interval(ms);
-            c->start_poller();
-          };
-          apply(id(dht22));
-          apply(id(my_scd41));
-          apply(id(sen55));
-          apply(id(mics));
-          apply(id(abs_humidity));
-          apply(id(wifi_signal_db));
-          ESP_LOGI("intervals", "Sensor update interval set to %u ms", ms);
+          apply_all(ms);
+          ESP_LOGI("intervals", "Sensor update interval set to %u ms", (unsigned) ms);
+
+  # ---- steady-state (warm) temperature capture, once at warm_delay_ms ----
+  - interval: 10s
+    then:
+      - lambda: |-
+          if (id(warm_latched)) {
+            return;
+          }
+          if (millis() < (uint32_t) ${warm_delay_ms}) {
+            return;
+          }
+          if (!(id(Temperature).has_state() && id(scd_temp).has_state()
+                && id(sen_temp).has_state())) {
+            return;
+          }
+          id(warm_dht) = id(Temperature).state;
+          id(warm_scd) = id(scd_temp).state;
+          id(warm_sen) = id(sen_temp).state;
+          id(warm_latched) = true;
+          ESP_LOGI("warm_temp", "Steady-state temps: DHT %.2f, SCD %.2f, SEN %.2f C",
+                   id(warm_dht), id(warm_scd), id(warm_sen));
+          ESP_LOGI("warm_temp", "Suggested biases: dht %.2f, scd %.2f, sen %.2f",
+                   id(warm_dht) - id(first_dht),
+                   id(warm_scd) - id(first_scd),
+                   id(warm_sen) - id(first_sen));
 
   # ---- display page rotation / refresh ----
   - interval: 1s
@@ -270,20 +413,34 @@ text_sensor:
     bssid:
       name: ${upper_devicename} Connected BSSID
 
+# Roboto Condensed (SIL OFL) pulled from Google Fonts at build time,
+# so no font file is redistributed with this project.
 font:
-  - file: "fonts/gothic.ttf"
+  - file:
+      type: gfonts
+      family: Roboto Condensed
+      weight: 400
     id: font_label
     size: 12
     glyphs: &glyphset "!\"%'()+=,-_.:/°µ³0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz "
-  - file: "fonts/gothic.ttf"
+  - file:
+      type: gfonts
+      family: Roboto Condensed
+      weight: 700
     id: font_value
     size: 24
     glyphs: *glyphset
-  - file: "fonts/gothic.ttf"
+  - file:
+      type: gfonts
+      family: Roboto Condensed
+      weight: 400
     id: font_big_label
     size: 18
     glyphs: *glyphset
-  - file: "fonts/gothic.ttf"
+  - file:
+      type: gfonts
+      family: Roboto Condensed
+      weight: 700
     id: font_big
     size: 44
     glyphs: *glyphset
@@ -332,6 +489,7 @@ sensor:
     source_id: wifi_signal_db
     name: "WiFi Signal Percent"
     id: wifi_signal_pct
+    internal: true
     filters:
       - lambda: return min(max(2 * (x + 100.0), 0.0), 100.0);
     unit_of_measurement: "%"
@@ -343,6 +501,15 @@ sensor:
     temperature:
       name: "${upper_devicename} DHT22 Temperature"
       id: Temperature
+      # DHT22 has no on-board offset, so correct it here.
+      filters:
+        - lambda: return x - ${bias_dht};
+      on_value:
+        - lambda: |-
+            if (std::isnan(id(first_dht)) && !std::isnan(x)) {
+              id(first_dht) = x;
+              ESP_LOGI("boot_temp", "DHT22 first reading: %.2f C", x);
+            }
     humidity:
       name: "${upper_devicename} DHT22 Humidity"
       id: Humidity
@@ -352,33 +519,61 @@ sensor:
     source_id: Temperature
     name: "${upper_devicename} DHT22 Temperature F"
     id: temperature_f
+    internal: true
     unit_of_measurement: "°F"
     accuracy_decimals: 1
     filters:
       - lambda: return x * 9.0 / 5.0 + 32.0;
 
   - platform: template
-    name: "${upper_devicename} DHT22 Absolute Humidity"
-    lambda: |-
-      const float mw = 18.01534;    // molar mass of water g/mol
-      const float r = 8.31447215;   // Universal gas constant J/mol/K
-      return (6.112 * powf(2.718281828, (17.67 * id(Temperature).state) /
-        (id(Temperature).state + 243.5)) * id(Humidity).state * mw) /
-        ((273.15 + id(Temperature).state) * r); // in grams/m^3
+    name: "${upper_devicename} Absolute Humidity"
+    id: abs_humidity
+    unit_of_measurement: "g/m³"
+    state_class: measurement
     accuracy_decimals: 2
     update_interval: 60s
-    id: abs_humidity
+    lambda: |-
+      const float mw = 18.01534f, r = 8.31447215f;
+      float t = id(temp_fused).state, rh = id(rh_fused).state;
+      if (std::isnan(t) || std::isnan(rh)) return NAN;
+      float es = 6.112f * expf(17.67f * t / (t + 243.5f));
+      return (es * rh * mw) / ((273.15f + t) * r);
+
+  - platform: template
+    name: "${upper_devicename} Dew Point"
+    id: dew_point
+    device_class: temperature
+    state_class: measurement
+    unit_of_measurement: "°C"
+    accuracy_decimals: 1
+    update_interval: 60s
+    lambda: |-
+      float t = id(temp_fused).state, rh = id(rh_fused).state;
+      if (std::isnan(t) || std::isnan(rh) || rh <= 0.0f) return NAN;
+      float g = logf(rh / 100.0f) + (17.67f * t) / (t + 243.5f);
+      return (243.5f * g) / (17.67f - g);
+    filters:
+      - round: 1
 
   - platform: scd4x
     id: my_scd41
     i2c_id: bus_a
     update_interval: 60s
+    # Self-heating handled on-device. This also corrects the RH output,
+    # so no YAML filter and no es() rescaling in rh_fused for this sensor.
+    temperature_offset: ${bias_scd}°C
     co2:
       name: "${upper_devicename} CO2"
       id: scd_co2
     temperature:
       name: "${upper_devicename} SD41 Temperature"
       id: scd_temp
+      on_value:
+        - lambda: |-
+            if (std::isnan(id(first_scd)) && !std::isnan(x)) {
+              id(first_scd) = x;
+              ESP_LOGI("boot_temp", "SCD41 first reading: %.2f C", x);
+            }
     humidity:
       name: "${upper_devicename} SD41 Humidity"
       id: scd_humidity
@@ -406,6 +601,12 @@ sensor:
       name: "${upper_devicename} Sen55 Temperature"
       accuracy_decimals: 1
       id: sen_temp
+      on_value:
+        - lambda: |-
+            if (std::isnan(id(first_sen)) && !std::isnan(x)) {
+              id(first_sen) = x;
+              ESP_LOGI("boot_temp", "SEN55 first reading: %.2f C", x);
+            }
     humidity:
       name: "${upper_devicename} Sen55 Humidity"
       accuracy_decimals: 0
@@ -425,12 +626,16 @@ sensor:
         gating_max_duration_minutes: 180
         std_initial: 50
         gain_factor: 230
+    # Self-heating handled on-device, same as the SCD41.
     temperature_compensation:
-      offset: 0
+      offset: ${bias_sen}
       normalized_offset_slope: 0
       time_constant: 0
     acceleration_mode: low
     store_baseline: true
+    # Optical chamber loads with dust over months; weekly fan spin-up
+    # keeps PM readings from drifting low. Also exposed as a button.
+    auto_cleaning_interval: 604800s
     address: 0x69
     update_interval: 60s
 
@@ -455,6 +660,317 @@ sensor:
     ammonia:
       name: ${upper_devicename} Ammonia
       id: mics_nh3
+    update_interval: 60s
+
+  # ---- ambient pressure pushed in from Home Assistant ----
+  - platform: template
+    name: "${upper_devicename} Ambient Pressure"
+    id: ambient_pressure
+    lambda: "return id(last_pressure);"
+    device_class: atmospheric_pressure
+    state_class: measurement
+    unit_of_measurement: "mbar"
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    update_interval: 60s
+
+  - platform: template
+    name: "${upper_devicename} Pressure Age"
+    id: pressure_age
+    lambda: |-
+      if (id(last_pressure_ms) == 0) return NAN;
+      return (float) (millis() - id(last_pressure_ms)) / 60000.0f;
+    device_class: duration
+    state_class: measurement
+    unit_of_measurement: "min"
+    accuracy_decimals: 1
+    entity_category: diagnostic
+    update_interval: 60s
+
+  # ---- cold-start reference temperatures (latched at first reading) ----
+  - platform: template
+    name: "${upper_devicename} Boot Temp DHT22"
+    id: boot_temp_dht
+    lambda: "return id(first_dht);"
+    device_class: temperature
+    state_class: measurement
+    unit_of_measurement: "°C"
+    accuracy_decimals: 2
+    entity_category: diagnostic
+    update_interval: 60s
+
+  - platform: template
+    name: "${upper_devicename} Boot Temp SCD41"
+    id: boot_temp_scd
+    lambda: "return id(first_scd);"
+    device_class: temperature
+    state_class: measurement
+    unit_of_measurement: "°C"
+    accuracy_decimals: 2
+    entity_category: diagnostic
+    update_interval: 60s
+
+  - platform: template
+    name: "${upper_devicename} Boot Temp SEN55"
+    id: boot_temp_sen
+    lambda: "return id(first_sen);"
+    device_class: temperature
+    state_class: measurement
+    unit_of_measurement: "°C"
+    accuracy_decimals: 2
+    entity_category: diagnostic
+    update_interval: 60s
+
+  # ---- steady-state (30 min) temperatures ----
+  - platform: template
+    name: "${upper_devicename} Warm Temp DHT22"
+    id: warm_temp_dht
+    lambda: "return id(warm_dht);"
+    device_class: temperature
+    state_class: measurement
+    unit_of_measurement: "°C"
+    accuracy_decimals: 2
+    entity_category: diagnostic
+    update_interval: 60s
+
+  - platform: template
+    name: "${upper_devicename} Warm Temp SCD41"
+    id: warm_temp_scd
+    lambda: "return id(warm_scd);"
+    device_class: temperature
+    state_class: measurement
+    unit_of_measurement: "°C"
+    accuracy_decimals: 2
+    entity_category: diagnostic
+    update_interval: 60s
+
+  - platform: template
+    name: "${upper_devicename} Warm Temp SEN55"
+    id: warm_temp_sen
+    lambda: "return id(warm_sen);"
+    device_class: temperature
+    state_class: measurement
+    unit_of_measurement: "°C"
+    accuracy_decimals: 2
+    entity_category: diagnostic
+    update_interval: 60s
+
+  # ---- measured self-heating rise: warm - boot ----
+  #  DHT22  -> paste into bias_dht
+  #  SCD41  -> paste into bias_scd (replaces the 4.0 default, do not add)
+  #  SEN55  -> paste into bias_sen
+  - platform: template
+    name: "${upper_devicename} Bias Est DHT22"
+    id: bias_est_dht
+    lambda: "return id(warm_dht) - id(first_dht);"
+    unit_of_measurement: "°C"
+    accuracy_decimals: 2
+    entity_category: diagnostic
+    update_interval: 60s
+
+  - platform: template
+    name: "${upper_devicename} Bias Est SCD41"
+    id: bias_est_scd
+    lambda: "return id(warm_scd) - id(first_scd);"
+    unit_of_measurement: "°C"
+    accuracy_decimals: 2
+    entity_category: diagnostic
+    update_interval: 60s
+
+  - platform: template
+    name: "${upper_devicename} Bias Est SEN55"
+    id: bias_est_sen
+    lambda: "return id(warm_sen) - id(first_sen);"
+    unit_of_measurement: "°C"
+    accuracy_decimals: 2
+    entity_category: diagnostic
+    update_interval: 60s
+
+  - platform: template
+    name: "${upper_devicename} Temperature Fused"
+    id: temp_fused
+    device_class: temperature
+    state_class: measurement
+    unit_of_measurement: "°C"
+    accuracy_decimals: 2
+    update_interval: 60s
+    # All three sources arrive already corrected - DHT22 by its YAML filter,
+    # SCD41 and SEN55 on-device - so no bias term appears here.
+    lambda: |-
+      struct Src { esphome::sensor::Sensor *s; float sigma; };
+      Src src[3] = {
+        { id(Temperature), ${sigma_dht} },
+        { id(scd_temp),    ${sigma_scd} },
+        { id(sen_temp),    ${sigma_sen} },
+      };
+
+      float x[3], w[3]; bool ok[3]; int n = 0;
+      for (int i = 0; i < 3; i++) {
+        auto *s = src[i].s;
+        ok[i] = s && s->has_state() && !std::isnan(s->state);
+        if (!ok[i]) continue;
+        x[i] = s->state;
+        w[i] = 1.0f / (src[i].sigma * src[i].sigma);
+        n++;
+      }
+      if (n == 0) { id(g_n) = 0; return NAN; }
+
+      auto fit = [&]() {
+        float sw = 0, swx = 0;
+        for (int i = 0; i < 3; i++) if (ok[i]) { sw += w[i]; swx += w[i] * x[i]; }
+        return std::make_pair(swx / sw, sw);
+      };
+      auto r = fit();
+      float mu = r.first, sw = r.second;
+
+      // reject one gross outlier, but only with all three alive
+      if (n == 3) {
+        int drop = -1; float worst = ${outlier_k};
+        for (int i = 0; i < 3; i++) {
+          float z = fabsf(x[i] - mu) / src[i].sigma;
+          if (z > worst) { worst = z; drop = i; }
+        }
+        if (drop >= 0) {
+          ESP_LOGW("fuse", "sensor %d rejected: %.2f C, z=%.1f", drop, x[drop], worst);
+          ok[drop] = false; n--;
+          r = fit(); mu = r.first; sw = r.second;
+        }
+      }
+
+      float chi2 = 0;
+      for (int i = 0; i < 3; i++) if (ok[i]) chi2 += w[i] * (x[i]-mu) * (x[i]-mu);
+      id(g_chi2)  = (n > 1) ? chi2 / (n - 1) : 0.0f;
+      id(g_sigma) = 1.0f / sqrtf(sw);
+      id(g_n)     = n;
+      return mu;
+
+  - platform: copy
+    source_id: temp_fused
+    name: "${upper_devicename} Fused Temperature F"
+    id: temp_fused_F
+    unit_of_measurement: "°F"
+    accuracy_decimals: 1
+    internal: true
+    filters:
+      - lambda: return x * 9.0 / 5.0 + 32.0;
+
+  - platform: template
+    name: "${upper_devicename} Temperature Fused Uncertainty"
+    id: temp_fused_sigma
+    lambda: "return id(g_sigma);"
+    unit_of_measurement: "°C"
+    accuracy_decimals: 3
+    entity_category: diagnostic
+    update_interval: 60s
+
+  - platform: template
+    name: "${upper_devicename} Sensor Agreement"
+    id: temp_fused_chi2
+    lambda: "return id(g_chi2);"
+    accuracy_decimals: 2
+    entity_category: diagnostic
+    update_interval: 60s
+
+  - platform: template
+    name: "${upper_devicename} Humidity Fused"
+    id: rh_fused
+    device_class: humidity
+    state_class: measurement
+    unit_of_measurement: "%"
+    accuracy_decimals: 2
+    update_interval: 60s
+    lambda: |-
+      auto es = [](float t) { return 6.112f * expf(17.67f * t / (t + 243.5f)); };
+
+      // tbias is the correction NOT already applied inside the sensor.
+      // SCD41 and SEN55 compensate on-device, so their tbias is 0.
+      // The DHT22 is corrected by a YAML filter, so its RH still needs
+      // rescaling from the sensor's own temperature to ambient.
+      struct Src {
+        esphome::sensor::Sensor *rh;
+        esphome::sensor::Sensor *t;
+        float tbias; float rhbias; float sigma;
+      };
+      Src src[3] = {
+        { id(Humidity),     id(Temperature), ${bias_dht}, ${rhbias_dht}, ${sigma_dht_rh} },
+        { id(scd_humidity), id(scd_temp),    0.0f,        ${rhbias_scd}, ${sigma_scd_rh} },
+        { id(sen_hum),      id(sen_temp),    0.0f,        ${rhbias_sen}, ${sigma_sen_rh} },
+      };
+
+      float x[3], w[3], sg[3]; bool ok[3]; int n = 0;
+      for (int i = 0; i < 3; i++) {
+        auto *s = src[i].rh;
+        ok[i] = s && s->has_state() && !std::isnan(s->state);
+        if (!ok[i]) continue;
+
+        // Temperature-referred correction: the RH reading was taken at the
+        // sensor's own (self-heated) temperature. id(t)->state is ALREADY
+        // bias-corrected, i.e. it is ambient, so the sensor's own temperature
+        // is (state + tbias). Scale RH by es(T_sensor) / es(T_ambient).
+        float f = 1.0f, sig = src[i].sigma;
+        auto *ts = src[i].t;
+        if (src[i].tbias != 0.0f) {
+          if (ts && ts->has_state() && !std::isnan(ts->state)) {
+            float tamb = ts->state;                     // ambient (corrected)
+            f = es(tamb + src[i].tbias) / es(tamb);     // sensor / ambient
+          } else {
+            sig *= 2.0f;   // uncorrected: widen the error bar, don't drop it
+          }
+        }
+
+        x[i] = s->state * f - src[i].rhbias;
+        if (x[i] < 0.0f)   x[i] = 0.0f;
+        if (x[i] > 100.0f) x[i] = 100.0f;
+
+        sg[i] = sig * f;              // scaling RH scales its uncertainty too
+        w[i]  = 1.0f / (sg[i] * sg[i]);
+        n++;
+      }
+      if (n == 0) { id(g_rh_n) = 0; return NAN; }
+
+      auto fit = [&]() {
+        float sw = 0, swx = 0;
+        for (int i = 0; i < 3; i++) if (ok[i]) { sw += w[i]; swx += w[i] * x[i]; }
+        return std::make_pair(swx / sw, sw);
+      };
+      auto r = fit();
+      float mu = r.first, sw = r.second;
+
+      if (n == 3) {
+        int drop = -1; float worst = ${rh_outlier_k};
+        for (int i = 0; i < 3; i++) {
+          float z = fabsf(x[i] - mu) / sg[i];
+          if (z > worst) { worst = z; drop = i; }
+        }
+        if (drop >= 0) {
+          ESP_LOGW("fuse_rh", "sensor %d rejected: %.1f %%RH, z=%.1f", drop, x[drop], worst);
+          ok[drop] = false; n--;
+          r = fit(); mu = r.first; sw = r.second;
+        }
+      }
+
+      float chi2 = 0;
+      for (int i = 0; i < 3; i++) if (ok[i]) chi2 += w[i] * (x[i]-mu) * (x[i]-mu);
+      id(g_rh_chi2)  = (n > 1) ? chi2 / (n - 1) : 0.0f;
+      id(g_rh_sigma) = 1.0f / sqrtf(sw);
+      id(g_rh_n)     = n;
+      return mu;
+
+  - platform: template
+    name: "${upper_devicename} Humidity Fused Uncertainty"
+    id: rh_fused_sigma
+    lambda: "return id(g_rh_sigma);"
+    unit_of_measurement: "%"
+    accuracy_decimals: 3
+    entity_category: diagnostic
+    update_interval: 60s
+
+  - platform: template
+    name: "${upper_devicename} Humidity Agreement"
+    id: rh_fused_chi2
+    lambda: "return id(g_rh_chi2);"
+    accuracy_decimals: 2
+    entity_category: diagnostic
     update_interval: 60s
 
 spi:
@@ -531,9 +1047,12 @@ display:
       const int Y2 = 205;  // bottom row (big layouts)
       const int mode = id(mode_index);   // 0 = All 16, 1 = Rotating, 2 = Highlight
 
-      // ---- temperature unit selection ----
+      // ---- temperature unit selection (fused sensor) ----
+      // explicit casts: the two id() results are distinct derived types
       const bool use_f = id(use_fahrenheit).state;
-      esphome::sensor::Sensor *t_sens = use_f ? id(temperature_f) : id(Temperature);
+      esphome::sensor::Sensor *t_sens = use_f
+        ? static_cast<esphome::sensor::Sensor *>(id(temp_fused_F))
+        : static_cast<esphome::sensor::Sensor *>(id(temp_fused));
       const char *t_label  = use_f ? "TEMP °F"      : "TEMP °C";
       const float t_mod    = use_f ? ${temp_mod_f}  : ${temp_mod_c};
       const float t_high   = use_f ? ${temp_high_f} : ${temp_high_c};
@@ -551,7 +1070,7 @@ display:
         switch (id(page_index)) {
           case 0:
             big(A, Y1, t_label,    t_sens,          1, t_mod,       t_high);
-            big(B, Y1, "RH %",     id(Humidity),    0, ${rh_mod},   ${rh_high});
+            big(B, Y1, "RH %",     id(rh_fused),    0, ${rh_mod},   ${rh_high});
             big(A, Y2, "AH g/m³",  id(abs_humidity),1, ${ah_mod},   ${ah_high});
             big(B, Y2, "CO2 ppm",  id(scd_co2),     0, ${co2_mod},  ${co2_high});
             break;
@@ -586,7 +1105,7 @@ display:
       } else {
         // ---------- All 16: dense ----------
         cell(A,   4, t_label,     t_sens,          1, t_mod,        t_high);
-        cell(B,   4, "RH %",      id(Humidity),    0, ${rh_mod},    ${rh_high});
+        cell(B,   4, "RH %",      id(rh_fused),    0, ${rh_mod},    ${rh_high});
         cell(A,  43, "AH g/m³",   id(abs_humidity),1, ${ah_mod},    ${ah_high});
         cell(B,  43, "CO2 ppm",   id(scd_co2),     0, ${co2_mod},   ${co2_high});
         cell(A,  82, "PM1.0 µg",  id(pm_1_0),      1, ${pm1_mod},   ${pm1_high});
