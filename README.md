@@ -187,10 +187,11 @@ You can see the last "sent" pressure and how long ago it was updated to make sur
 
 2) Temperature bias - there are three sensors that report temps (DHT22, SCD41, SEN55).  Care was taken to try to thermally isolate, but they still  experience local heating as the whole sensor package warms up over time.  Let the device become cold/room temperature (off for at least an hour) and then start it up.  Under the Diagnostic window in home assistant you'll find Boot temps and Warm temps (after 30 min) from the sensors, and a Bias estimate which is how much the temp rose (assuming the room stayed the same over those 30 minutes). Of note, these cold/warm values will only populate after a power-on from off (not just reset) to prevent you losing the values on simple reset (the point is to get these cold numbers after being powered off for a while). These value can be adjusted in the home assistant card.  You'll see they are unit-less degrees - they will represent F or C depending on how the "Display Fahrenheit" toggle is set.  A larger bias value will bring down the displayed temp from that sensor.  I have the offsets I measured on mine as the defaults.
 
-<img src="Images/TempCorrection1.png" alt="alt text" width="300">
-<img src="Images/TempCorrection2.png" alt="alt text" width="300">
-<img src="Images/TempCorrection4.png" alt="alt text" width="200">
-
+<p align="left">
+<img src="Images/TempCorrection1.png" alt="alt text" width="260">
+<img src="Images/TempCorrection2.png" alt="alt text" width="260">
+<img src="Images/TempCorrection4.png" alt="alt text" width="260">
+</p>
 
 3) If you REALLY want you can calibrate the relative humidity with a salt calibration, these values are also in the YAML "rhbias_dht", etc.
 
