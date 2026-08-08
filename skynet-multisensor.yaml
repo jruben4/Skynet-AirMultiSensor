@@ -41,17 +41,26 @@ substitutions:
   nh3_mod:    "25"      # NIOSH REL
   nh3_high:   "50"      # OSHA PEL
 
-  # ---- self-heating corrections (°C) ----
-  #  Each equals that sensor's steady-state rise, i.e. the "Bias Est ..."
-  #  entity after a cold start + 30 min. Where it is applied differs:
-  #    bias_dht -> YAML filter (DHT22 has no on-board mechanism)
-  #    bias_scd -> SCD41 temperature_offset  (on-device; also fixes its RH)
-  #    bias_sen -> SEN55 temperature_compensation.offset (on-device)
-  #  Note: 4.0 is the SCD41 factory/ESPHome default. Replace with your
-  #  measured value; do NOT add to it.
-  bias_dht:  "4.81" 
-  bias_scd:  "3.39" 
-  bias_sen:  "4.01" 
+  # ---- self-heating corrections ----
+  #  Defaults, in DEGREES CELSIUS, for the three "Bias ..." number entities.
+  #  After the first flash the live values come from Home Assistant and are
+  #  restored across reboots, so editing these has no effect on a running
+  #  device unless you also change the number in HA.
+  #
+  #  The numbers are expressed in whatever unit the Display Fahrenheit
+  #  switch selects. Because a bias is a temperature DIFFERENCE, the
+  #  conversion is x1.8 only - there is no +32 term. Flipping the switch
+  #  rescales the stored values so the physical correction is unchanged.
+  #
+  #  All three are applied as ESPHome filters (x - bias) rather than in the
+  #  sensors' own offset registers, because those registers are written once
+  #  at setup() and cannot be changed at runtime.
+  bias_dht:  "4.81"
+  bias_scd:  "3.39"
+  bias_sen:  "5"
+  # Range must cover both units: +-20 C is about +-36 F.
+  bias_min:  "-20"
+  bias_max:  "40"
   # ---- 1-sigma (°C). Datasheet "typ. accuracy" treated as 2-sigma. ----
   sigma_dht: "0.25"
   sigma_scd: "0.40"
@@ -171,6 +180,11 @@ globals:
     type: bool
     restore_value: no
     initial_value: 'true'
+  # Unit the three Bias numbers are CURRENTLY stored in. false = delta C.
+  # Persisted so a reboot never triggers a spurious rescale. Everything
+  # that reads a bias uses this, not the switch, so there is no window
+  # where the two disagree.
+  - { id: bias_unit_f, type: bool, restore_value: yes, initial_value: 'false' }
   - { id: g_sigma, type: float, restore_value: no, initial_value: '0' }
   - { id: g_chi2,  type: float, restore_value: no, initial_value: '0' }
   - { id: g_n,     type: int,   restore_value: no, initial_value: '0' }
@@ -206,7 +220,8 @@ switch:
     restore_mode: RESTORE_DEFAULT_ON
     entity_category: "config"
     # NOTE: fires during setup(), before the display buffer exists.
-    # Only touch globals here.
+    # Only touch globals here. The bias rescale is handled by an interval
+    # so it can never run against half-restored state.
     on_turn_on:
       - lambda: |-
           id(force_redraw) = true;
@@ -331,7 +346,86 @@ number:
       - lambda: |-
           id(apply_intervals) = true;
 
+  # ---- live self-heating corrections ----
+  #  Expressed in the unit the Display Fahrenheit switch selects, as a
+  #  DELTA (x1.8, no +32). Read on every sensor publish, so a change takes
+  #  effect on the next poll - no reflash, no reboot.
+  - platform: template
+    name: "${upper_devicename} Bias DHT22"
+    id: bias_dht_num
+    optimistic: true
+    restore_value: true
+    initial_value: ${bias_dht}
+    min_value: ${bias_min}
+    max_value: ${bias_max}
+    step: 0.01
+    unit_of_measurement: "°"
+    mode: box
+    entity_category: "config"
+    icon: "mdi:thermometer-lines"
+    on_value:
+      - lambda: |-
+          id(force_redraw) = true;
+
+  - platform: template
+    name: "${upper_devicename} Bias SCD41"
+    id: bias_scd_num
+    optimistic: true
+    restore_value: true
+    initial_value: ${bias_scd}
+    min_value: ${bias_min}
+    max_value: ${bias_max}
+    step: 0.01
+    unit_of_measurement: "°"
+    mode: box
+    entity_category: "config"
+    icon: "mdi:thermometer-lines"
+    on_value:
+      - lambda: |-
+          id(force_redraw) = true;
+
+  - platform: template
+    name: "${upper_devicename} Bias SEN55"
+    id: bias_sen_num
+    optimistic: true
+    restore_value: true
+    initial_value: ${bias_sen}
+    min_value: ${bias_min}
+    max_value: ${bias_max}
+    step: 0.01
+    unit_of_measurement: "°"
+    mode: box
+    entity_category: "config"
+    icon: "mdi:thermometer-lines"
+    on_value:
+      - lambda: |-
+          id(force_redraw) = true;
+
 interval:
+  # ---- keep the Bias numbers in the display's unit ----
+  #  Runs only from the main loop, so it never sees half-restored state.
+  #  A bias is a temperature DIFFERENCE: convert with x1.8 only, no +32.
+  - interval: 2s
+    then:
+      - lambda: |-
+          const bool want_f = id(use_fahrenheit).state;
+          if (want_f == id(bias_unit_f)) {
+            return;
+          }
+          const float k = want_f ? 1.8f : (1.0f / 1.8f);
+          auto rescale = [&](esphome::number::Number *n) {
+            if (n == nullptr || std::isnan(n->state)) return;
+            auto call = n->make_call();
+            call.set_value(n->state * k);
+            call.perform();
+          };
+          rescale(id(bias_dht_num));
+          rescale(id(bias_scd_num));
+          rescale(id(bias_sen_num));
+          id(bias_unit_f) = want_f;
+          id(force_redraw) = true;
+          ESP_LOGI("bias", "Bias numbers rescaled to delta %s", want_f ? "F" : "C");
+
   # ---- sensor poll-rate manager ----
   #  Phase 1: poll fast (boot_poll_ms) until all three boot temps latch.
   #  Phase 2: switch to the user-selected Sensor Update Seconds.
@@ -592,9 +686,13 @@ sensor:
     temperature:
       name: "${upper_devicename} DHT22 Temperature"
       id: Temperature
-      # DHT22 has no on-board offset, so correct it here.
+      # Bias comes from the Bias DHT22 number, converted to delta C.
       filters:
-        - lambda: return x - ${bias_dht};
+        - lambda: |-
+            float b = id(bias_dht_num).state;
+            if (std::isnan(b)) b = 0.0f;
+            if (id(bias_unit_f)) b /= 1.8f;
+            return x - b;
         - timeout:
             timeout: ${stale_timeout}
             value: nan
@@ -627,9 +725,11 @@ sensor:
     id: my_scd41
     i2c_id: bus_a
     update_interval: 60s
-    # Self-heating handled on-device. This also corrects the RH output,
-    # so no YAML filter and no es() rescaling in rh_fused for this sensor.
-    temperature_offset: ${bias_scd}°C
+    # Offset register left at 0 - the correction is applied by the filter
+    # below so it can be changed at runtime. Consequence: the SCD41's own
+    # RH output is referred to its self-heated temperature, so rh_fused
+    # rescales it (tbias is non-zero for this sensor again).
+    temperature_offset: 0°C
     # See the scd_asc note in substitutions - ASC needs a weekly ~400 ppm
     # background to stay honest.
     automatic_self_calibration: ${scd_asc}
@@ -644,16 +744,21 @@ sensor:
     temperature:
       name: "${upper_devicename} SD41 Temperature"
       id: scd_temp
+      filters:
+        - lambda: |-
+            float b = id(bias_scd_num).state;
+            if (std::isnan(b)) b = 0.0f;
+            if (id(bias_unit_f)) b /= 1.8f;
+            return x - b;
+        - timeout:
+            timeout: ${stale_timeout}
+            value: nan
       on_value:
         - lambda: |-
             if (std::isnan(id(first_scd)) && !std::isnan(x)) {
               id(first_scd) = x;
               ESP_LOGI("boot_temp", "SCD41 first reading: %.2f C", x);
             }
-      filters:
-        - timeout:
-            timeout: ${stale_timeout}
-            value: nan
     humidity:
       name: "${upper_devicename} SD41 Humidity"
       id: scd_humidity
@@ -701,16 +806,21 @@ sensor:
       name: "${upper_devicename} Sen55 Temperature"
       accuracy_decimals: 1
       id: sen_temp
+      filters:
+        - lambda: |-
+            float b = id(bias_sen_num).state;
+            if (std::isnan(b)) b = 0.0f;
+            if (id(bias_unit_f)) b /= 1.8f;
+            return x - b;
+        - timeout:
+            timeout: ${stale_timeout}
+            value: nan
       on_value:
         - lambda: |-
             if (std::isnan(id(first_sen)) && !std::isnan(x)) {
               id(first_sen) = x;
               ESP_LOGI("boot_temp", "SEN55 first reading: %.2f C", x);
             }
-      filters:
-        - timeout:
-            timeout: ${stale_timeout}
-            value: nan
     humidity:
       name: "${upper_devicename} Sen55 Humidity"
       accuracy_decimals: 0
@@ -742,9 +852,10 @@ sensor:
         gating_max_duration_minutes: 180
         std_initial: 50
         gain_factor: 230
-    # Self-heating handled on-device, same as the SCD41.
+    # Offset register left at 0 - see the SCD41 note above. The correction
+    # is applied by the temperature filter so it stays runtime-adjustable.
     temperature_compensation:
-      offset: ${bias_sen}
+      offset: 0
       normalized_offset_slope: 0
       time_constant: 0
     acceleration_mode: low
@@ -895,42 +1006,48 @@ sensor:
     entity_category: diagnostic
     update_interval: 60s
 
-  # ---- measured self-heating rise: warm - boot ----
-  #  DHT22  -> paste into bias_dht
-  #  SCD41  -> paste into bias_scd (replaces the 4.0 default, do not add)
-  #  SEN55  -> paste into bias_sen
+  # ---- measured self-heating rise: warm - boot, in the display's unit ----
+  #  Add each of these to the matching "Bias ..." number in Home Assistant.
+  #  They measure the rise on top of whatever bias is already applied, so
+  #  after a correct calibration they should read ~0 on the next cold start.
   - platform: template
     name: "${upper_devicename} Bias Est DHT22"
     id: bias_est_dht
-    unit_of_measurement: "°C"
+    unit_of_measurement: "°"
     accuracy_decimals: 2
     entity_category: diagnostic
     update_interval: 60s
     lambda: |-
       if (!id(is_power_on_boot)) return NAN;
-      return id(warm_dht) - id(first_dht);
+      float d = id(warm_dht) - id(first_dht);
+      if (id(bias_unit_f)) d *= 1.8f;
+      return d;
 
   - platform: template
     name: "${upper_devicename} Bias Est SCD41"
     id: bias_est_scd
-    unit_of_measurement: "°C"
+    unit_of_measurement: "°"
     accuracy_decimals: 2
     entity_category: diagnostic
     update_interval: 60s
     lambda: |-
       if (!id(is_power_on_boot)) return NAN;
-      return id(warm_scd) - id(first_scd);
+      float d = id(warm_scd) - id(first_scd);
+      if (id(bias_unit_f)) d *= 1.8f;
+      return d;
 
   - platform: template
     name: "${upper_devicename} Bias Est SEN55"
     id: bias_est_sen
-    unit_of_measurement: "°C"
+    unit_of_measurement: "°"
     accuracy_decimals: 2
     entity_category: diagnostic
     update_interval: 60s
     lambda: |-
       if (!id(is_power_on_boot)) return NAN;
-      return id(warm_sen) - id(first_sen);
+      float d = id(warm_sen) - id(first_sen);
+      if (id(bias_unit_f)) d *= 1.8f;
+      return d;
 
   - platform: template
     name: "${upper_devicename} Temperature Fused"
@@ -940,8 +1057,8 @@ sensor:
     unit_of_measurement: "°C"
     accuracy_decimals: 2
     update_interval: 60s
-    # All three sources arrive already corrected - DHT22 by its YAML filter,
-    # SCD41 and SEN55 on-device - so no bias term appears here.
+    # All three sources arrive already corrected by their own filters,
+    # so no bias term appears here.
     lambda: |-
       struct Src { esphome::sensor::Sensor *s; float sigma; };
       Src src[3] = {
@@ -1027,20 +1144,27 @@ sensor:
     update_interval: 60s
     lambda: |-
       auto es = [](float t) { return 6.112f * expf(17.67f * t / (t + 243.5f)); };
+      // live bias from the number entities, always returned as delta C
+      auto nval = [](esphome::number::Number *n) -> float {
+        if (n == nullptr || std::isnan(n->state)) return 0.0f;
+        float b = n->state;
+        if (id(bias_unit_f)) b /= 1.8f;
+        return b;
+      };
 
-      // tbias is the correction NOT already applied inside the sensor.
-      // SCD41 and SEN55 compensate on-device, so their tbias is 0.
-      // The DHT22 is corrected by a YAML filter, so its RH still needs
-      // rescaling from the sensor's own temperature to ambient.
+      // All three sensors now report RH referred to their own self-heated
+      // temperature, because their offset registers are zeroed and the
+      // correction happens in the temperature filters. So every source
+      // needs the es() rescaling from sensor temperature back to ambient.
       struct Src {
         esphome::sensor::Sensor *rh;
         esphome::sensor::Sensor *t;
         float tbias; float rhbias; float sigma;
       };
       Src src[3] = {
-        { id(Humidity),     id(Temperature), ${bias_dht}, ${rhbias_dht}, ${sigma_dht_rh} },
-        { id(scd_humidity), id(scd_temp),    0.0f,        ${rhbias_scd}, ${sigma_scd_rh} },
-        { id(sen_hum),      id(sen_temp),    0.0f,        ${rhbias_sen}, ${sigma_sen_rh} },
+        { id(Humidity),     id(Temperature), nval(id(bias_dht_num)), ${rhbias_dht}, ${sigma_dht_rh} },
+        { id(scd_humidity), id(scd_temp),    nval(id(bias_scd_num)), ${rhbias_scd}, ${sigma_scd_rh} },
+        { id(sen_hum),      id(sen_temp),    nval(id(bias_sen_num)), ${rhbias_sen}, ${sigma_sen_rh} },
       };
 
       float x[3], w[3], sg[3]; bool ok[3]; int n = 0;
@@ -1049,10 +1173,9 @@ sensor:
         ok[i] = s && s->has_state() && !std::isnan(s->state);
         if (!ok[i]) continue;
 
-        // Temperature-referred correction: the RH reading was taken at the
-        // sensor's own (self-heated) temperature. id(t)->state is ALREADY
-        // bias-corrected, i.e. it is ambient, so the sensor's own temperature
-        // is (state + tbias). Scale RH by es(T_sensor) / es(T_ambient).
+        // id(t)->state is ALREADY bias-corrected, i.e. ambient, so the
+        // sensor's own temperature is (state + tbias).
+        // Scale RH by es(T_sensor) / es(T_ambient).
         float f = 1.0f, sig = src[i].sigma;
         auto *ts = src[i].t;
         if (src[i].tbias != 0.0f) {

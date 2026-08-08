@@ -54,15 +54,15 @@ All 3D printable files and print profiles for the enclosures are hosted on Maker
 
 ## 🛒 Hardware Bill of Materials (BOM) & Purchase Links
 
-| Component | Part | Interface | Link |
-|---|---|---|---|
-| MCU | Freenove ESP32-WROOM (ESP32 rev3.1, 4MB flash, no PSRAM) | — | https://www.amazon.com/dp/B0C9THDPXP |
-| Temp / humidity | DHT22 (AM2302) | 1-Wire | https://www.amazon.com/dp/B0CPHQC9SF |
-| CO2 | Sensirion SCD41 | I²C bus A | https://www.amazon.com/dp/B0GWQMQVN8 |
-| Particulate / VOC / NOx | Sensirion SEN55 | I²C bus B | https://www.seeedstudio.com/Grove-All-in-one-Environmental-Sensor-SEN55-p-5373.html |
-| Trace gases | MICS-4514 | I²C bus A | https://www.amazon.com/dp/B09G9PZ4XZ |
-| Display | ST7789V 240×320 IPS, SPI | SPI (VSPI) | https://www.amazon.com/dp/B082GFTZQD |
-| Grove breakout cable (optional) | — | — | https://www.amazon.com/dp/B074MDM36N |
+| Component | Part | Interface | Link | Price $USD as of 8/26 |
+|---|---|---|---|---|
+| MCU | Freenove ESP32-WROOM (ESP32 rev3.1, 4MB flash, no PSRAM) | — | https://www.amazon.com/dp/B0C9THDPXP | 18.95 (for 2) |
+| Temp / humidity | DHT22 (AM2302) | 1-Wire | https://www.amazon.com/dp/B0CPHQC9SF | 9.99 (for 3) |
+| CO2 | Sensirion SCD41 | I²C bus A | https://www.amazon.com/dp/B0GWQMQVN8 | 19.99 |
+| Particulate / VOC / NOx | Sensirion SEN55 | I²C bus B | https://www.seeedstudio.com/Grove-All-in-one-Environmental-Sensor-SEN55-p-5373.html | $59 | 
+| Trace gases | MICS-4514 | I²C bus A | https://www.amazon.com/dp/B09G9PZ4XZ | 42.90 |
+| Display | ST7789V 240×320 IPS, SPI | SPI (VSPI) | https://www.amazon.com/dp/B082GFTZQD | 17.27 |
+| Grove breakout cable (optional) | — | — | https://www.amazon.com/dp/B074MDM36N | 9.99 (for 5) |
 | M3x4 and M2x4 screws | - | - | - |
 | USB-C power cable | - | - | - |
 
@@ -185,11 +185,12 @@ You can see the last "sent" pressure and how long ago it was updated to make sur
 <img src="Images/Pressure1.png" alt="alt text" width="300">
 <img src="Images/Pressure2.png" alt="alt text" width="300">
 
-2) Temperature bias - there are three sensors that report temps (DHT22, SCD41, SEN55).  Care was taken to try to thermally isolate, but they still  experience local heating as the whole sensor package warms up over time.  Let the device become cold/room temperature (off for at least an hour) and then start it up.  Under the Diagnostic window in home assistant you'll find Boot temps and Warm temps (after 30 min) from the sensors, and a Bias estimate which is how much the temp rose (assuming the room stayed the same over those 30 minutes).  Put these values in the esphome YAML file, at the top under substiutions you'll find "bias_dht", "bias_scd", and "bias_sen".  I have the offsets I measured on mine as the defaults.
+2) Temperature bias - there are three sensors that report temps (DHT22, SCD41, SEN55).  Care was taken to try to thermally isolate, but they still  experience local heating as the whole sensor package warms up over time.  Let the device become cold/room temperature (off for at least an hour) and then start it up.  Under the Diagnostic window in home assistant you'll find Boot temps and Warm temps (after 30 min) from the sensors, and a Bias estimate which is how much the temp rose (assuming the room stayed the same over those 30 minutes). Of note, these cold/warm values will only populate after a power-on from off (not just reset) to prevent you losing the values on simple reset (the point is to get these cold numbers after being powered off for a while). These value can be adjusted in the home assistant card.  You'll see they are unit-less degrees - they will represent F or C depending on how the "Display Fahrenheit" toggle is set.  A larger bias value will bring down the displayed temp from that sensor.  I have the offsets I measured on mine as the defaults.
 
 <img src="Images/TempCorrection1.png" alt="alt text" width="300">
 <img src="Images/TempCorrection2.png" alt="alt text" width="300">
-<img src="Images/TempCorrection3.png" alt="alt text" width="200">
+<img src="Images/TempCorrection4.png" alt="alt text" width="200">
+
 
 3) If you REALLY want you can calibrate the relative humidity with a salt calibration, these values are also in the YAML "rhbias_dht", etc.
 
